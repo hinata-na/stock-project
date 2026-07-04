@@ -22,7 +22,7 @@ LINE から自然言語で日本株のスクリーニング・売買判断の材
 
 ```
 [GitHub Actions 平日18:30 JST]
-  batch.py: JPX銘柄一覧(プライム) → yfinance で指標取得
+  batch.py: JPX銘柄一覧(プライム/スタンダード/グロース、約3,700銘柄) → yfinance で指標取得
     ├ ファンダメンタル: PER/PBR/配当利回り/ROE/時価総額
     └ テクニカル(indicators.py): MA25/MA75/RSI14 → シグナル判定
   → data/screener.csv をコミット & push → Render が自動再デプロイ
@@ -42,6 +42,10 @@ LINE から自然言語で日本株のスクリーニング・売買判断の材
 - 初回はデータがないため、GitHub Actions の `nightly-batch` を手動実行
   (Actions タブ > nightly-batch > Run workflow)するか、
   ローカルで `python batch.py` を実行して CSV をコミットする
+- 全市場・約3,700銘柄の取得には**90分前後**かかる(Yahoo側のレート制限を
+  避けるため銘柄ごとに間隔を空けて順次取得しているため)。平日毎日実行すると
+  月2,000分を超える可能性があるため、**リポジトリはパブリック**にして
+  GitHub Actions無料枠(パブリックは無制限)を使う前提としている
 
 ## セットアップ手順
 
