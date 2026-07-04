@@ -7,7 +7,6 @@ Render は push を検知して自動再デプロイするため、Web アプリ
 import argparse
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
@@ -78,29 +77,33 @@ def fetch_metrics(code: str) -> dict | None:
     }
 
 
-def fetch_all(codes: list[str], workers: int) -> tuple[list[dict], list[str]]:
-    """並列で指標を取得し、(成功データ, 失敗銘柄コード) を返す。"""
+def fetch_all(codes: list[str], delay: float) -> tuple[list[dict], list[str]]:
+    """順番に指標を取得し、(成功データ, 失敗銘柄コード) を返す。
+
+    並列実行するとリクエストが短時間に集中し、Yahoo 側のレート制限に
+    引っかかって以後のリクエストが全滅する(プロセス内では回復しない)
+    ことが分かったため、銘柄ごとに間隔を空けて順番に取得する。
+    """
     start = time.time()
     rows: list[dict] = []
     failed: list[str] = []
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(fetch_metrics, code): code for code in codes}
-        for i, future in enumerate(as_completed(futures), 1):
-            result = future.result()
-            if result:
-                rows.append(result)
-            else:
-                failed.append(futures[future])
-            if i % 100 == 0:
-                print(f"{i}/{len(codes)} 件処理 ({time.time() - start:.0f}秒)", flush=True)
+    for i, code in enumerate(codes, 1):
+        result = fetch_metrics(code)
+        if result:
+            rows.append(result)
+        else:
+            failed.append(code)
+        if i % 100 == 0:
+            print(f"{i}/{len(codes)} 件処理 ({time.time() - start:.0f}秒)", flush=True)
+        time.sleep(delay)
     return rows, failed
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, help="取得銘柄数の上限(動作確認用)")
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--retries", type=int, default=2)
+    parser.add_argument("--delay", type=float, default=0.8, help="銘柄ごとの待機秒数")
+    parser.add_argument("--retries", type=int, default=1)
     args = parser.parse_args()
 
     universe = fetch_universe()
@@ -109,16 +112,16 @@ def main() -> None:
     print(f"対象: {len(universe)} 銘柄", flush=True)
 
     start = time.time()
-    rows, failed = fetch_all(list(universe["code"]), args.workers)
+    rows, failed = fetch_all(list(universe["code"]), args.delay)
 
-    # Yahoo のレート制限(401)で落ちた分は、間隔を空けて低並列で取り直す
+    # 稀に発生する一時的な失敗分だけを、待機時間を延ばして拾い直す
     for attempt in range(1, args.retries + 1):
         if not failed:
             break
-        wait = 30 * attempt
+        wait = 120 * attempt
         print(f"リトライ {attempt}: 残り {len(failed)} 銘柄({wait}秒待機後)", flush=True)
         time.sleep(wait)
-        recovered, failed = fetch_all(failed, workers=2)
+        recovered, failed = fetch_all(failed, delay=args.delay * 2)
         rows.extend(recovered)
 
     if failed:
