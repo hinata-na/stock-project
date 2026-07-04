@@ -13,7 +13,8 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
-from screening import format_conditions, parse_screening_conditions
+from screener import run_screening
+from screening import format_conditions, generate_commentary, parse_screening_conditions
 
 load_dotenv()
 
@@ -45,14 +46,33 @@ async def callback(request: Request):
 def generate_reply(user_text: str) -> str:
     """ユーザーの発言から返信文を作る。
 
-    Phase 2: Gemini で自然言語をスクリーニング条件に変換して返す。
-    Phase 3: ここで実際に銘柄データをフィルタして結果を返すよう拡張する。
+    Gemini で自然言語をスクリーニング条件に変換し、
+    夜間バッチで生成済みの銘柄データをフィルタして結果を返す。
     """
     try:
         conditions = parse_screening_conditions(user_text)
     except Exception:
         return "条件の解析に失敗しました。時間をおいてもう一度お試しください。"
-    return format_conditions(conditions)
+
+    summary = format_conditions(conditions)
+    if not summary:
+        return (
+            "条件を認識できませんでした。\n"
+            "例:「PER15倍以下で配当利回り3%以上の自動車株」"
+        )
+
+    result_text, rows = run_screening(conditions)
+    reply = f"■認識した条件\n{summary}\n\n■結果\n{result_text}"
+
+    if rows:
+        try:
+            commentary = generate_commentary(rows)
+        except Exception:
+            commentary = ""
+        if commentary:
+            reply += f"\n\n■AIによる解説\n{commentary}"
+
+    return reply
 
 
 @handler.add(MessageEvent, message=TextMessageContent)

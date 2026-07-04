@@ -15,10 +15,35 @@ LINE から自然言語で日本株のスクリーニング・売買判断の材
 
 - [x] Phase 1: LINE オウム返しボット(配管の確認)
 - [x] Phase 2: Gemini で自然言語 → スクリーニング条件 JSON に変換
-- [ ] Phase 3: yfinance + 夜間バッチで日本株スクリーニング
-- [ ] Phase 4: テクニカル指標による売買シグナル + 解説文生成
+- [x] Phase 3: yfinance + 夜間バッチで日本株スクリーニング
+- [x] Phase 4: テクニカル指標による売買シグナル + 解説文生成
 
-## セットアップ手順(Phase 1)
+## しくみ
+
+```
+[GitHub Actions 平日18:30 JST]
+  batch.py: JPX銘柄一覧(プライム) → yfinance で指標取得
+    ├ ファンダメンタル: PER/PBR/配当利回り/ROE/時価総額
+    └ テクニカル(indicators.py): MA25/MA75/RSI14 → シグナル判定
+  → data/screener.csv をコミット & push → Render が自動再デプロイ
+
+[ユーザーがLINEで発言]
+  「PER15倍以下で配当3%以上、ゴールデンクロスの自動車株」
+  → Gemini が条件JSONに変換 (screening.py: parse_screening_conditions)
+  → data/screener.csv を pandas でフィルタ (screener.py)
+  → 時価総額上位10件 + Gemini による初心者向け解説文 (screening.py: generate_commentary) を返信
+```
+
+- 取得指標: PER / PBR / 配当利回り / ROE / 時価総額 / 東証33業種
+- シグナル判定: ゴールデンクロス / デッドクロス(MA25とMA75のクロス)、
+  売られすぎ / 買われすぎ(RSI14が30未満 / 70超)、それ以外は中立
+- 1件のLINE返信につき Gemini 呼び出しは2回(条件解析 + 解説文生成)。
+  解説文はヒット銘柄にシグナルが1件も無ければ生成をスキップする
+- 初回はデータがないため、GitHub Actions の `nightly-batch` を手動実行
+  (Actions タブ > nightly-batch > Run workflow)するか、
+  ローカルで `python batch.py` を実行して CSV をコミットする
+
+## セットアップ手順
 
 ### 1. LINE 公式アカウントの作成
 
@@ -82,6 +107,15 @@ copy .env.example .env   # 値を記入
 
 LINE からの Webhook をローカルで受けたい場合は ngrok 等でトンネルする
 (通常は Render に直接デプロイして確認すれば十分)。
+
+### スクリーニング機能のローカル確認
+
+```powershell
+# 全銘柄だと数分かかるので、動作確認だけなら --limit で絞る
+.venv\Scripts\python batch.py --limit 50
+
+.venv\Scripts\python -c "from screening import ScreeningConditions; from screener import run_screening; print(run_screening(ScreeningConditions(per_max=15))[0])"
+```
 
 ## 注意事項
 
