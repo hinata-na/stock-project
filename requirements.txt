@@ -1,0 +1,5 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+line-bot-sdk>=3.17
+python-dotenv>=1.0
+google-genai>=1.0

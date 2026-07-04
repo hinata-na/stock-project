@@ -1,0 +1,91 @@
+# stock-line-bot
+
+LINE から自然言語で日本株のスクリーニング・売買判断の材料を得るボット。
+
+## 構成(すべて無料枠)
+
+| 役割 | 技術 |
+|---|---|
+| UI | LINE Messaging API(返信は無料・無制限) |
+| サーバー | Python (FastAPI) + Render 無料プラン |
+| 自然言語の解釈 | Gemini API 無料枠(Phase 2 で導入) |
+| 株価データ | yfinance + GitHub Actions 夜間バッチ(Phase 3 で導入) |
+
+## ロードマップ
+
+- [x] Phase 1: LINE オウム返しボット(配管の確認)
+- [x] Phase 2: Gemini で自然言語 → スクリーニング条件 JSON に変換
+- [ ] Phase 3: yfinance + 夜間バッチで日本株スクリーニング
+- [ ] Phase 4: テクニカル指標による売買シグナル + 解説文生成
+
+## セットアップ手順(Phase 1)
+
+### 1. LINE 公式アカウントの作成
+
+1. [LINE Developers](https://developers.line.biz/ja/) にLINEアカウントでログイン
+2. プロバイダーを新規作成(名前は任意。例: `stock-bot`)
+3. 「Messaging API チャネル」を作成
+   - ※ 2024年以降は先に [LINE公式アカウント](https://entry.line.biz/) を作成し、
+     設定画面から Messaging API を有効化する流れになる場合あり
+4. 控えるもの:
+   - **チャネルシークレット**(チャネル基本設定タブ)
+   - **チャネルアクセストークン(長期)**(Messaging API設定タブで発行)
+5. Messaging API設定タブで以下を設定:
+   - 応答メッセージ: **オフ**(自動応答が二重に飛ぶのを防ぐ)
+   - Webhook の利用: **オン**
+
+### 1.5. Gemini API キーの取得(Phase 2)
+
+1. [Google AI Studio](https://aistudio.google.com/apikey) にGoogleアカウントでログイン
+2. 「Create API key」でキーを発行(無料枠の範囲で利用)
+3. 控えたキーを `.env` の `GEMINI_API_KEY` に設定
+
+### 2. GitHub にプッシュ
+
+```
+GitHub で空のプライベートリポジトリを作成し、このフォルダを push
+```
+
+### 3. Render にデプロイ
+
+1. [Render](https://render.com/) に GitHub アカウントでサインアップ(カード登録不要)
+2. New > **Web Service** > GitHub リポジトリを選択
+   (`render.yaml` を自動認識。認識されない場合は Blueprint として作成)
+3. 環境変数を設定:
+   - `LINE_CHANNEL_SECRET`
+   - `LINE_CHANNEL_ACCESS_TOKEN`
+   - `GEMINI_API_KEY`
+4. デプロイ完了後の URL(例: `https://stock-line-bot.onrender.com`)を控える
+
+### 4. Webhook の接続
+
+1. LINE Developers > Messaging API設定 > Webhook URL に
+   `https://<RenderのURL>/callback` を設定
+2. 「検証」ボタンで成功を確認
+3. QR コードから友だち追加し、何か送信 → オウム返しが来れば成功
+
+### 5. スリープ対策(任意)
+
+Render 無料プランは 15 分間アクセスがないとスリープし、復帰に約1分かかる。
+[cron-job.org](https://cron-job.org/)(無料)で `https://<RenderのURL>/` に
+10 分間隔の GET を設定すると回避できる。
+
+## ローカルでの動作確認
+
+```powershell
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+copy .env.example .env   # 値を記入
+.venv\Scripts\uvicorn main:app --reload
+# → http://127.0.0.1:8000/ で {"status":"ok"} が返れば OK
+```
+
+LINE からの Webhook をローカルで受けたい場合は ngrok 等でトンネルする
+(通常は Render に直接デプロイして確認すれば十分)。
+
+## 注意事項
+
+- 売買判断の提示は不特定多数に公開すると投資助言業(金商法)に抵触し得る。
+  自分用・少人数用に留めること。
+- yfinance は非公式ライブラリのため、将来壊れた場合は J-Quants API
+  (無料プランは12週遅延)への乗り換えを検討する。
