@@ -3,7 +3,13 @@
 import numpy as np
 import pandas as pd
 
-from swing_rules import DEFAULT_PARAMS, find_setup, market_regime_ok, rank_candidates
+from swing_rules import (
+    DEFAULT_PARAMS,
+    evaluate_after_signal,
+    find_setup,
+    market_regime_ok,
+    rank_candidates,
+)
 
 
 def _make_hist(days: int = 200, price: float = 1000.0, volume: float = 100_000) -> pd.DataFrame:
@@ -93,6 +99,81 @@ def test_rank_candidates():
     setups = [{"volume_ratio": v} for v in (2.0, 5.0, 3.0, 4.0)]
     top = rank_candidates(setups, max_count=3)
     assert [s["volume_ratio"] for s in top] == [5.0, 4.0, 3.0]
+
+
+def _eval_hist(rows: list[dict]) -> pd.DataFrame:
+    """evaluate_after_signal 用の小さな日足を作る。"""
+    dates = pd.bdate_range("2025-01-06", periods=len(rows))
+    df = pd.DataFrame(rows, index=dates)
+    df["Volume"] = 100_000
+    return df
+
+
+_SETUP = {"entry_limit": 1000.0, "take_profit": 1060.0, "stop_loss": 960.0, "time_stop_days": 3}
+
+
+def test_evaluate_fill_and_take_profit():
+    hist = _eval_hist(
+        [
+            {"Open": 1000, "High": 1005, "Low": 995, "Close": 1000},  # シグナル日
+            {"Open": 998, "High": 1010, "Low": 990, "Close": 1005},   # 翌日: 始値998で約定
+            {"Open": 1010, "High": 1065, "Low": 1005, "Close": 1050}, # 高値が利確ライン到達
+        ]
+    )
+    ev = evaluate_after_signal(hist, hist.index[0].date(), _SETUP)
+    assert ev["status"] == "決済済み" and ev["result"] == "利確"
+    assert ev["entry_price"] == 998 and ev["exit_price"] == 1060.0
+
+
+def test_evaluate_stop_loss_priority():
+    # 同日に高値が利確・安値が損切りの両方にかかる日は損切りを優先(保守的)
+    hist = _eval_hist(
+        [
+            {"Open": 1000, "High": 1005, "Low": 995, "Close": 1000},
+            {"Open": 1000, "High": 1070, "Low": 950, "Close": 1040},
+        ]
+    )
+    ev = evaluate_after_signal(hist, hist.index[0].date(), _SETUP)
+    assert ev["result"] == "損切り" and ev["exit_price"] == 960.0
+
+
+def test_evaluate_unfilled():
+    # 翌日の安値が指値より上 → 未約定
+    hist = _eval_hist(
+        [
+            {"Open": 1000, "High": 1005, "Low": 995, "Close": 1000},
+            {"Open": 1020, "High": 1050, "Low": 1010, "Close": 1040},
+        ]
+    )
+    assert evaluate_after_signal(hist, hist.index[0].date(), _SETUP)["status"] == "未約定"
+
+
+def test_evaluate_time_stop_and_open_states():
+    rows = [
+        {"Open": 1000, "High": 1005, "Low": 995, "Close": 1000},
+        {"Open": 1000, "High": 1010, "Low": 990, "Close": 1005},  # 約定
+        {"Open": 1005, "High": 1015, "Low": 1000, "Close": 1010},
+        {"Open": 1010, "High": 1020, "Low": 1000, "Close": 1015},
+    ]
+    # データ途中まで → 保有中
+    ev = evaluate_after_signal(_eval_hist(rows), rows and pd.bdate_range("2025-01-06", periods=1)[0].date(), _SETUP)
+    assert ev["status"] == "保有中"
+    # 時間切れ日(エントリーから3営業日)まで進む → 終値手仕舞い
+    rows.append({"Open": 1015, "High": 1025, "Low": 1005, "Close": 1020})
+    ev = evaluate_after_signal(_eval_hist(rows), pd.bdate_range("2025-01-06", periods=1)[0].date(), _SETUP)
+    assert ev["status"] == "決済済み" and ev["result"] == "時間切れ" and ev["exit_price"] == 1020.0
+
+
+def test_evaluate_slippage_applied_to_exit_only():
+    hist = _eval_hist(
+        [
+            {"Open": 1000, "High": 1005, "Low": 995, "Close": 1000},
+            {"Open": 998, "High": 1065, "Low": 990, "Close": 1050},
+        ]
+    )
+    ev = evaluate_after_signal(hist, hist.index[0].date(), _SETUP, slippage_pct=0.1)
+    assert ev["entry_price"] == 998  # エントリーは価格保証
+    assert ev["exit_price"] == round(1060.0 * 0.999, 1)
 
 
 if __name__ == "__main__":

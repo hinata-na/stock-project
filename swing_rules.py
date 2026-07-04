@@ -128,3 +128,75 @@ def find_setup(hist, params: SwingParams = DEFAULT_PARAMS) -> dict | None:
 def rank_candidates(setups: list[dict], max_count: int = 3) -> list[dict]:
     """候補が多い日は出来高倍率の高い順に絞る(注目度の代理指標)。"""
     return sorted(setups, key=lambda s: s["volume_ratio"], reverse=True)[:max_count]
+
+
+def evaluate_after_signal(hist, signal_date, setup: dict, slippage_pct: float = 0.0) -> dict:
+    """シグナル日以降の日足から、約定と出口を判定する。
+
+    シャドーラン(夜間バッチ)とバックテストの両方がこの関数を使うことで、
+    「検証した通りの約定・出口モデル」で答え合わせされることを保証する。
+
+    約定モデル: シグナル翌営業日、始値が指値以下なら始値で、安値が指値以下なら指値で約定。
+    出口: 損切り優先(同日に利確と損切りの両方がかかり得る場合は保守的に損切り)、
+          ギャップは始値で約定、time_stop_days 営業日で時間切れ(終値手仕舞い)。
+    slippage_pct は出口にのみ不利方向へ適用する(エントリーは指値・板寄せのため価格保証)。
+
+    返り値: {"status": "約定待ち" | "未約定" | "保有中" | "決済済み", ...}
+    決済済みなら result(利確/損切り/時間切れ 等)、pnl_pct などを含む。
+    """
+    dates = [d.date() if hasattr(d, "date") else d for d in hist.index]
+    try:
+        signal_idx = dates.index(signal_date)
+    except ValueError:
+        return {"status": "約定待ち"}  # シグナル日がデータに無い(データ未更新)
+
+    entry_idx = signal_idx + 1
+    if entry_idx >= len(hist):
+        return {"status": "約定待ち"}  # 翌営業日がまだ来ていない
+
+    limit = setup["entry_limit"]
+    o = float(hist["Open"].iloc[entry_idx])
+    low = float(hist["Low"].iloc[entry_idx])
+    if o <= limit:
+        entry_price = o
+    elif low <= limit:
+        entry_price = limit
+    else:
+        return {"status": "未約定"}
+
+    result = {
+        "status": "保有中",
+        "entry_date": dates[entry_idx],
+        "entry_price": round(entry_price, 1),
+    }
+
+    tp, sl = setup["take_profit"], setup["stop_loss"]
+    deadline = entry_idx + setup["time_stop_days"]
+    for j in range(entry_idx, min(deadline + 1, len(hist))):
+        o, h, low = (float(hist[c].iloc[j]) for c in ("Open", "High", "Low"))
+        exit_price, reason = None, None
+        if j > entry_idx and o <= sl:
+            exit_price, reason = o, "損切り(ギャップ)"
+        elif low <= sl:
+            exit_price, reason = sl, "損切り"
+        elif j > entry_idx and o >= tp:
+            exit_price, reason = o, "利確(ギャップ)"
+        elif h >= tp:
+            exit_price, reason = tp, "利確"
+        elif j == deadline:
+            exit_price, reason = float(hist["Close"].iloc[j]), "時間切れ"
+        if exit_price is not None:
+            exit_price *= 1 - slippage_pct / 100
+            result.update(
+                {
+                    "status": "決済済み",
+                    "exit_date": dates[j],
+                    "exit_price": round(exit_price, 1),
+                    "result": reason,
+                    "pnl_pct": round((exit_price / entry_price - 1) * 100, 2),
+                    "days_held": j - entry_idx,
+                }
+            )
+            return result
+
+    return result  # 出口条件にまだ達していない(保有中)

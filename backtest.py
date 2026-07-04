@@ -5,7 +5,6 @@
   python backtest.py fetch            # 3年分の日足を data/backtest_cache/ に保存(約20分)
   python backtest.py run              # 全期間で検証
   python backtest.py run --start 2023-11-01 --end 2025-06-30   # 調整期間のみ
-  python backtest.py run --entry open # 寄り成行エントリーで比較
 
 判定ロジックは swing_rules.find_setup() をそのまま呼ぶ(バックテスト専用の
 再実装をしない)ことで、検証した通りのルールが本番で動くことを保証する。
@@ -30,6 +29,7 @@ import pandas as pd
 from swing_rules import (
     DEFAULT_PARAMS,
     SwingParams,
+    evaluate_after_signal,
     find_setup,
     market_regime_ok,
     rank_candidates,
@@ -109,38 +109,12 @@ def _regime_days(index_hist: pd.DataFrame, params: SwingParams) -> set:
     return ok
 
 
-def _simulate_exit(
-    hist: pd.DataFrame, entry_idx: int, entry_price: float, setup: dict
-) -> tuple[int, float, str] | None:
-    """エントリー後の値動きから出口を決める。(出口日index, 出口価格, 理由) を返す。
-
-    利確と損切りが同日に両方かかり得る場合は損切りを優先(保守的)。
-    データが尽きた場合は None(建玉未決着として集計から除外)。
-    """
-    tp, sl = setup["take_profit"], setup["stop_loss"]
-    deadline = entry_idx + setup["time_stop_days"]
-    for j in range(entry_idx, min(deadline + 1, len(hist))):
-        o, h, low = hist["Open"].iloc[j], hist["High"].iloc[j], hist["Low"].iloc[j]
-        if j > entry_idx and o <= sl:
-            return j, o, "損切り(ギャップ)"
-        if low <= sl:
-            return j, sl, "損切り"
-        if j > entry_idx and o >= tp:
-            return j, o, "利確(ギャップ)"
-        if h >= tp:
-            return j, tp, "利確"
-        if j == deadline:
-            return j, float(hist["Close"].iloc[j]), "時間切れ"
-    return None
-
-
 def simulate(
     hists: dict[str, pd.DataFrame],
     index_hist: pd.DataFrame,
     params: SwingParams,
     start: str | None,
     end: str | None,
-    entry_model: str,
 ) -> list[dict]:
     """パラメータ一式でシミュレーションし、取引リストを返す(表示・保存はしない)。"""
     regime_ok_days = _regime_days(index_hist, params)
@@ -179,40 +153,26 @@ def simulate(
         for s in day_signals:
             if len(position_exits) >= MAX_POSITIONS:
                 break
-            code, i, setup = s["code"], s["idx"], s["setup"]
+            code, setup = s["code"], s["setup"]
             if code in open_until and open_until[code] >= date:
                 continue
-            hist = hists[code]
-            o = float(hist["Open"].iloc[i + 1])
-            low = float(hist["Low"].iloc[i + 1])
-            limit = setup["entry_limit"]
-            if entry_model == "open":
-                entry_price = o * (1 + SLIPPAGE_PCT / 100)
-            elif o <= limit:
-                entry_price = o
-            elif low <= limit:
-                entry_price = limit
-            else:
+            ev = evaluate_after_signal(hists[code], date, setup, slippage_pct=SLIPPAGE_PCT)
+            if ev["status"] == "未約定":
                 trades.append({"date": date, "code": code, "result": "未約定", "pnl_pct": None})
                 continue
-            exit_info = _simulate_exit(hist, i + 1, entry_price, setup)
-            if exit_info is None:
-                continue
-            j, exit_price, reason = exit_info
-            exit_price *= 1 - SLIPPAGE_PCT / 100
-            pnl_pct = (exit_price / entry_price - 1) * 100
-            exit_date = hist.index[j].date()
-            open_until[code] = exit_date
-            position_exits.append(exit_date)
+            if ev["status"] != "決済済み":
+                continue  # データが尽きて未決着(集計から除外)
+            open_until[code] = ev["exit_date"]
+            position_exits.append(ev["exit_date"])
             trades.append(
                 {
                     "date": date,
                     "code": code,
-                    "entry": round(entry_price, 1),
-                    "exit": round(exit_price, 1),
-                    "days": j - (i + 1),
-                    "result": reason,
-                    "pnl_pct": round(pnl_pct, 2),
+                    "entry": ev["entry_price"],
+                    "exit": ev["exit_price"],
+                    "days": ev["days_held"],
+                    "result": ev["result"],
+                    "pnl_pct": ev["pnl_pct"],
                 }
             )
     return trades
@@ -252,14 +212,14 @@ def stats(trades: list[dict]) -> dict:
     return result
 
 
-def run(start: str | None, end: str | None, entry_model: str) -> None:
+def run(start: str | None, end: str | None) -> None:
     hists, index_hist = _load_cache()
-    print(f"銘柄数: {len(hists)}, 期間: {start or '最古'} 〜 {end or '最新'}, エントリー: {entry_model}")
-    trades = simulate(hists, index_hist, DEFAULT_PARAMS, start, end, entry_model)
+    print(f"銘柄数: {len(hists)}, 期間: {start or '最古'} 〜 {end or '最新'}")
+    trades = simulate(hists, index_hist, DEFAULT_PARAMS, start, end)
     _report(trades)
     out_dir = CACHE_DIR / "results"
     out_dir.mkdir(exist_ok=True)
-    out = out_dir / f"trades_{entry_model}_{start or 'all'}_{end or 'all'}.csv"
+    out = out_dir / f"trades_{start or 'all'}_{end or 'all'}.csv"
     pd.DataFrame(trades).to_csv(out, index=False)
     print(f"\n取引明細: {out}")
 
@@ -287,13 +247,12 @@ def main() -> None:
     p_run = sub.add_parser("run")
     p_run.add_argument("--start")
     p_run.add_argument("--end")
-    p_run.add_argument("--entry", choices=["limit", "open"], default="limit")
     args = parser.parse_args()
 
     if args.cmd == "fetch":
         fetch(args.delay)
     else:
-        run(args.start, args.end, args.entry)
+        run(args.start, args.end)
 
 
 if __name__ == "__main__":
