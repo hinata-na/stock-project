@@ -14,6 +14,7 @@ import yfinance as yf
 from curl_cffi import requests as cffi_requests
 
 from indicators import compute_technicals
+from news import build_news_features
 
 # JPX が毎月更新している東証上場銘柄一覧(Excel)
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
@@ -140,9 +141,36 @@ def main() -> None:
         print(f"取得成功が {len(merged)}/{len(universe)} 件のみのため中断", file=sys.stderr)
         sys.exit(1)
 
+    merged = attach_news(merged)
+
     DATA_PATH.parent.mkdir(exist_ok=True)
     merged.to_csv(DATA_PATH, index=False)
     print(f"保存完了: {DATA_PATH} ({len(merged)} 銘柄, {time.time() - start:.0f}秒)")
+
+
+def attach_news(merged: pd.DataFrame) -> pd.DataFrame:
+    """TDnet 適時開示の感情スコアを news_* 列として合流させる。
+
+    ニュースは補助的な特徴量なので、取得や採点に失敗しても
+    中核のスクリーニングデータは壊さず、列だけ空にして続行する。
+    """
+    news_cols = ["news_count", "news_sentiment", "news_label", "news_latest"]
+    try:
+        features = build_news_features(codes=set(merged["code"]))
+    except Exception as exc:  # noqa: BLE001
+        print(f"ニュース特徴量の取得に失敗(スキップ): {exc}", file=sys.stderr)
+        features = {}
+
+    news_df = pd.DataFrame.from_dict(features, orient="index").rename_axis("code").reset_index()
+    for col in news_cols:
+        if col not in news_df.columns:
+            news_df[col] = pd.NA
+
+    merged = merged.merge(news_df[["code", *news_cols]], on="code", how="left")
+    merged["news_count"] = merged["news_count"].fillna(0).astype(int)
+    matched = int((merged["news_sentiment"].notna()).sum())
+    print(f"ニュース採点済み: {matched} 銘柄", flush=True)
+    return merged
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ LINE から自然言語で日本株のスクリーニング・売買判断の材
 | サーバー | Python (FastAPI) + Render 無料プラン |
 | 自然言語の解釈 | Gemini API 無料枠(Phase 2 で導入) |
 | 株価データ | yfinance + GitHub Actions 夜間バッチ(Phase 3 で導入) |
+| ニュース | TDnet 適時開示(yanoshin WebAPI) + Gemini 感情分析(Phase 5 で導入) |
 
 ## ロードマップ
 
@@ -17,6 +18,7 @@ LINE から自然言語で日本株のスクリーニング・売買判断の材
 - [x] Phase 2: Gemini で自然言語 → スクリーニング条件 JSON に変換
 - [x] Phase 3: yfinance + 夜間バッチで日本株スクリーニング
 - [x] Phase 4: テクニカル指標による売買シグナル + 解説文生成
+- [x] Phase 5: 適時開示ニュースの感情スコアをスクリーニング項目に追加
 
 ## しくみ
 
@@ -24,21 +26,27 @@ LINE から自然言語で日本株のスクリーニング・売買判断の材
 [GitHub Actions 平日18:30 JST]
   batch.py: JPX銘柄一覧(プライム) → yfinance で指標取得
     ├ ファンダメンタル: PER/PBR/配当利回り/ROE/時価総額
-    └ テクニカル(indicators.py): MA25/MA75/RSI14 → シグナル判定
+    ├ テクニカル(indicators.py): MA25/MA75/RSI14 → シグナル判定
+    └ ニュース(news.py): TDnet適時開示 → Gemini で感情スコア化
   → data/screener.csv をコミット & push → Render が自動再デプロイ
 
 [ユーザーがLINEで発言]
-  「PER15倍以下で配当3%以上、ゴールデンクロスの自動車株」
+  「好材料が出ている配当4%以上の株」
   → Gemini が条件JSONに変換 (screening.py: parse_screening_conditions)
   → data/screener.csv を pandas でフィルタ (screener.py)
-  → 時価総額上位10件 + Gemini による初心者向け解説文 (screening.py: generate_commentary) を返信
+  → 上位10件 + Gemini による初心者向け解説文 (screening.py: generate_commentary) を返信
 ```
 
 - 取得指標: PER / PBR / 配当利回り / ROE / 時価総額 / 東証33業種
 - シグナル判定: ゴールデンクロス / デッドクロス(MA25とMA75のクロス)、
   売られすぎ / 買われすぎ(RSI14が30未満 / 70超)、それ以外は中立
-- 1件のLINE返信につき Gemini 呼び出しは2回(条件解析 + 解説文生成)。
-  解説文はヒット銘柄にシグナルが1件も無ければ生成をスキップする
+- ニュース(数値特徴量化): 直近7日の TDnet 適時開示のタイトルを Gemini で
+  -1〜1 に感情スコア化し、`news_sentiment` / `news_count` / `news_label` 列を追加。
+  「好材料が出ている」「最近開示があった」等でスクリーニングできる
+  - テキスト情報を「数値の特徴量」として既存の表形式データに合流させる方式。
+    リクエスト時ではなく夜間バッチで採点するため Render 無料枠の制約を受けない
+  - 採点対象はプライム銘柄かつ開示があった銘柄のみ(全市場を採点しない)
+- 1件のLINE返信につき Gemini 呼び出しは2回(条件解析 + 解説文生成)
 - 初回はデータがないため、GitHub Actions の `nightly-batch` を手動実行
   (Actions タブ > nightly-batch > Run workflow)するか、
   ローカルで `python batch.py` を実行して CSV をコミットする

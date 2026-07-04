@@ -47,13 +47,21 @@ def run_screening(conditions: ScreeningConditions) -> tuple[str, list[dict]]:
     if conditions.signal is not None:
         df = df[df["signal"] == conditions.signal]
 
+    has_news = "news_sentiment" in df.columns
+    if conditions.news_sentiment_min is not None and has_news:
+        df = df[df["news_sentiment"] >= conditions.news_sentiment_min]
+    if conditions.has_recent_news and "news_count" in df.columns:
+        df = df[df["news_count"] > 0]
+
     if df.empty:
         return "条件に合致する銘柄はありませんでした。条件を緩めてみてください。", []
 
     total = len(df)
-    df = df.sort_values("market_cap_oku_yen", ascending=False).head(MAX_RESULTS)
+    # ニュース感情を条件にした場合はスコア順、それ以外は時価総額順で上位を表示
+    sort_key = "news_sentiment" if (conditions.news_sentiment_min is not None and has_news) else "market_cap_oku_yen"
+    df = df.sort_values(sort_key, ascending=False).head(MAX_RESULTS)
 
-    lines = [f"合致: {total}銘柄(時価総額上位{min(total, MAX_RESULTS)}件を表示)"]
+    lines = [f"合致: {total}銘柄(上位{min(total, MAX_RESULTS)}件を表示)"]
     for i, row in enumerate(df.itertuples(), 1):
         details = []
         if pd.notna(row.per):
@@ -70,6 +78,9 @@ def run_screening(conditions: ScreeningConditions) -> tuple[str, list[dict]]:
             details.append(f"RSI {row.rsi14:.0f}")
         if pd.notna(row.signal):
             details.append(f"シグナル: {row.signal}")
+        if has_news and pd.notna(row.news_sentiment):
+            label = row.news_label if pd.notna(row.news_label) else ""
+            details.append(f"📰{label}({row.news_sentiment:+.1f})")
         lines.append(f"{i}. {row.name} ({row.code}) {row.sector}")
         lines.append("   " + " / ".join(details))
 
