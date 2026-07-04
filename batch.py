@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
+from curl_cffi import requests as cffi_requests
 
 from indicators import compute_technicals
 
@@ -35,9 +36,15 @@ def fetch_universe() -> pd.DataFrame:
 
 
 def fetch_metrics(code: str) -> dict | None:
-    """yfinance から 1 銘柄分の指標(ファンダメンタル + テクニカル)を取得する。"""
+    """yfinance から 1 銘柄分の指標(ファンダメンタル + テクニカル)を取得する。
+
+    yfinance の既定セッションは全スレッドで共有されており、並列アクセス時に
+    Yahoo 側の認証(crumb)が壊れて 401 が連鎖することがあるため、
+    ブラウザを偽装した独立セッション(curl_cffi)を銘柄ごとに使う。
+    """
     try:
-        ticker = yf.Ticker(f"{code}.T")
+        session = cffi_requests.Session(impersonate="chrome")
+        ticker = yf.Ticker(f"{code}.T", session=session)
         info = ticker.info
     except Exception:
         return None
