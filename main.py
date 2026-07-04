@@ -21,6 +21,12 @@ load_dotenv()
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 
+# 未設定(空)の場合は誰でも利用可能。限定公開にする場合は
+# 自分の user_id をログから確認して設定する(README参照)
+ALLOWED_USER_IDS = {
+    uid.strip() for uid in os.environ.get("ALLOWED_USER_IDS", "").split(",") if uid.strip()
+}
+
 app = FastAPI()
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -77,7 +83,14 @@ def generate_reply(user_text: str) -> str:
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
-    reply = generate_reply(event.message.text)
+    user_id = event.source.user_id
+    print(f"user_id: {user_id}")  # 初回セットアップ時、自分のIDをRenderのログから確認するため
+
+    if ALLOWED_USER_IDS and user_id not in ALLOWED_USER_IDS:
+        reply = "現在このBotは限定公開です。"
+    else:
+        reply = generate_reply(event.message.text)
+
     with ApiClient(configuration) as api_client:
         MessagingApi(api_client).reply_message(
             ReplyMessageRequest(
