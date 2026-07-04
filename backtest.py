@@ -158,7 +158,9 @@ def simulate(
                 continue
             if i + 1 >= len(hist):
                 continue  # 翌営業日がまだない
-            setup = find_setup(hist.iloc[: i + 1], params)
+            # 本番バッチは6ヶ月分(約120営業日)の日足で判定するため、
+            # バックテストも同じ窓幅で find_setup を呼んで条件を揃える
+            setup = find_setup(hist.iloc[max(0, i - 119) : i + 1], params)
             if setup:
                 signals.append({"date": date, "code": code, "idx": i, "setup": setup})
 
