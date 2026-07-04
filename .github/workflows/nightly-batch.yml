@@ -22,6 +22,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run batch
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python batch.py
 
       - name: Commit data

@@ -9,6 +9,10 @@ import sys
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()  # news.py 等が import 時に環境変数を読むため、import より前に呼ぶ
+
 import pandas as pd
 import yfinance as yf
 from curl_cffi import requests as cffi_requests
@@ -169,6 +173,8 @@ def attach_news(merged: pd.DataFrame) -> pd.DataFrame:
         if col not in news_df.columns:
             news_df[col] = pd.NA
 
+    # 既に news_* 列がある場合(再実行時など)、マージで列名が重複しないよう先に落とす
+    merged = merged.drop(columns=[c for c in news_cols if c in merged.columns])
     merged = merged.merge(news_df[["code", *news_cols]], on="code", how="left")
     merged["news_count"] = merged["news_count"].fillna(0).astype(int)
     matched = int((merged["news_sentiment"].notna()).sum())

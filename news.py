@@ -98,8 +98,12 @@ def score_sentiments(disclosures: dict[str, dict]) -> dict[str, dict]:
                     "sentiment": round(max(-1.0, min(1.0, s.sentiment)), 2),
                     "label": s.label,
                 }
-        except Exception:
-            continue  # 一部バッチが失敗しても他銘柄の採点は残す
+        except Exception as exc:  # noqa: BLE001
+            # 一部バッチが失敗しても他銘柄の採点は残すが、原因は必ず記録する
+            import sys
+
+            print(f"ニュース採点バッチ失敗({len(chunk)}銘柄分をスキップ): {exc}", file=sys.stderr)
+            continue
 
     return scores
 
