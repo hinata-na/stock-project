@@ -1,4 +1,4 @@
-"""夜間バッチ: 東証プライム全銘柄の指標を取得して data/screener.csv に保存する。
+"""夜間バッチ: 東証全市場(プライム/スタンダード/グロース)の指標を取得して data/screener.csv に保存する。
 
 GitHub Actions から毎営業日実行し、生成した CSV をリポジトリにコミットする。
 Render は push を検知して自動再デプロイするため、Web アプリは常に前日データを持つ。
@@ -21,16 +21,19 @@ JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq000
 
 DATA_PATH = Path(__file__).parent / "data" / "screener.csv"
 
+# 東証の内国普通株のみ対象(外国株式・ETF・REIT・PRO Market等は除外)
+_TARGET_MARKETS = ("プライム（内国株式）", "スタンダード（内国株式）", "グロース（内国株式）")
+
 
 def fetch_universe() -> pd.DataFrame:
-    """JPX の上場銘柄一覧からプライム市場の普通株を抽出する。"""
+    """JPX の上場銘柄一覧からプライム/スタンダード/グロース市場の内国普通株を抽出する。"""
     df = pd.read_excel(JPX_LIST_URL, dtype=str)
-    prime = df[df["市場・商品区分"].str.contains("プライム", na=False)]
+    universe = df[df["市場・商品区分"].isin(_TARGET_MARKETS)]
     return pd.DataFrame(
         {
-            "code": prime["コード"].str.strip(),
-            "name": prime["銘柄名"].str.strip(),
-            "sector": prime["33業種区分"].str.strip(),
+            "code": universe["コード"].str.strip(),
+            "name": universe["銘柄名"].str.strip(),
+            "sector": universe["33業種区分"].str.strip(),
         }
     )
 
