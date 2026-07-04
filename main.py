@@ -15,6 +15,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 from screener import run_screening
 from screening import format_conditions, generate_commentary, parse_screening_conditions
+from stock_lookup import judge_timing
 
 load_dotenv()
 
@@ -59,6 +60,12 @@ def generate_reply(user_text: str) -> str:
         conditions = parse_screening_conditions(user_text)
     except Exception:
         return "条件の解析に失敗しました。時間をおいてもう一度お試しください。"
+
+    if conditions.company_name:
+        try:
+            return judge_timing(conditions.company_name)
+        except Exception:
+            return "判断の生成に失敗しました。時間をおいてもう一度お試しください。"
 
     summary = format_conditions(conditions)
     if not summary:

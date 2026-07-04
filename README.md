@@ -19,6 +19,7 @@ LINE から自然言語で日本株のスクリーニング・売買判断の材
 - [x] Phase 3: yfinance + 夜間バッチで日本株スクリーニング
 - [x] Phase 4: テクニカル指標による売買シグナル + 解説文生成
 - [x] Phase 5: 適時開示ニュースの感情スコアをスクリーニング項目に追加
+- [x] Phase 6: 個別銘柄を名指しした「買い時・売り時・様子見」の判断
 
 ## しくみ
 
@@ -35,6 +36,13 @@ LINE から自然言語で日本株のスクリーニング・売買判断の材
   → Gemini が条件JSONに変換 (screening.py: parse_screening_conditions)
   → data/screener.csv を pandas でフィルタ (screener.py)
   → 上位10件 + Gemini による初心者向け解説文 (screening.py: generate_commentary) を返信
+
+[個別銘柄を名指しした場合]
+  「トヨタは今買い時?」
+  → Gemini が銘柄名を認識 (company_name) → screener.csv から銘柄を特定 (stock_lookup.py)
+  → ファンダメンタル(業種平均とのPER/PBR比較) + テクニカル + ニュース感情 +
+    チャート形状(直近20日レンジ内の位置・MA25の傾き・陽線陰線日数を都度取得)を集約
+  → Gemini が「買い時/売り時/様子見」+ 理由を生成して返信
 ```
 
 - 取得指標: PER / PBR / 配当利回り / ROE / 時価総額 / 東証33業種
@@ -46,7 +54,10 @@ LINE から自然言語で日本株のスクリーニング・売買判断の材
   - テキスト情報を「数値の特徴量」として既存の表形式データに合流させる方式。
     リクエスト時ではなく夜間バッチで採点するため Render 無料枠の制約を受けない
   - 採点対象はプライム銘柄かつ開示があった銘柄のみ(全市場を採点しない)
-- 1件のLINE返信につき Gemini 呼び出しは2回(条件解析 + 解説文生成)
+- 1件のLINE返信につき Gemini 呼び出しは2回(条件解析 + 解説文生成 or 売買判断)
+- Gemini のモデルは flash-lite を使用(screening.py: GEMINI_MODEL)。
+  2.5-flash は無料枠が20リクエスト/日しかなく、夜間バッチのニュース採点だけで
+  超過するため。flash-lite は日次上限が大きい
 - 初回はデータがないため、GitHub Actions の `nightly-batch` を手動実行
   (Actions タブ > nightly-batch > Run workflow)するか、
   ローカルで `python batch.py` を実行して CSV をコミットする

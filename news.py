@@ -13,13 +13,15 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
+from screening import GEMINI_MODEL
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # JPX/東証の TDnet 適時開示を JSON で返す無料ラッパー(yanoshin WebAPI)
 TDNET_URL = "https://webapi.yanoshin.jp/webapi/tdnet/list/{start}-{end}.json"
 LOOKBACK_DAYS = 7
 MAX_TITLES_PER_CODE = 10  # 1銘柄あたり Gemini に渡すタイトル数の上限
-GEMINI_BATCH = 20  # 1回の Gemini 呼び出しで採点する銘柄数
+GEMINI_BATCH = 100  # 1回の Gemini 呼び出しで採点する銘柄数(呼び出し回数削減のため大きめ)
 
 
 def fetch_disclosures(days: int = LOOKBACK_DAYS) -> dict[str, dict]:
@@ -83,7 +85,7 @@ def score_sentiments(disclosures: dict[str, dict]) -> dict[str, dict]:
         payload = [{"code": c, "titles": disclosures[c]["titles"]} for c in chunk]
         try:
             resp = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=GEMINI_MODEL,
                 contents=str(payload),
                 config=types.GenerateContentConfig(
                     system_instruction=_SENTIMENT_PROMPT,
