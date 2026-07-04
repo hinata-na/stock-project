@@ -17,18 +17,19 @@ from dataclasses import dataclass
 class SwingParams:
     """売買ルールの全パラメータ。バックテストで調整し、本番も同じ値を使う。"""
 
+    # 数値は2026-07-05のバックテストで決定(検証結果は DESIGN.md の Phase 7 を参照)
     # --- セットアップ(買い候補の条件) ---
     breakout_days: int = 75      # この日数の終値高値を更新したらブレイクとみなす
     volume_ratio_min: float = 2.0  # 出来高が20日平均の何倍以上か
-    rsi_max: float = 70.0        # RSI14 がこれ以上は過熱として除外
+    rsi_max: float = 75.0        # RSI14 がこれ以上は過熱として除外
     ma_days: int = 25            # 終値がこの移動平均より上にあること
     # --- 除外条件 ---
     daily_gain_max_pct: float = 15.0   # 当日の上昇率がこれ以上(ストップ高級)は除外
     turnover_min_yen: float = 1e8      # 20日平均売買代金がこれ未満は流動性不足で除外
     # --- 出口 ---
     take_profit_pct: float = 6.0   # 利確ライン(エントリー価格比)
-    stop_loss_pct: float = 3.0     # 損切りライン(エントリー価格比)
-    time_stop_days: int = 5        # エントリー後この営業日数で決着しなければ手仕舞い
+    stop_loss_pct: float = 4.0     # 損切りライン(エントリー価格比)
+    time_stop_days: int = 8        # エントリー後この営業日数で決着しなければ手仕舞い
     # --- 地合いフィルタ ---
     regime_ma_days: int = 25       # 指数の終値がこの移動平均を下回る日は候補なし
 
