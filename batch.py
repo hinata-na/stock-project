@@ -175,6 +175,14 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"スイング候補の処理に失敗(スキップ): {exc}", file=sys.stderr)
 
+    # 候補カードのLINEプッシュ配信(Phase 9)。データ生成とは独立に失敗させる
+    try:
+        from swing_push import deliver
+
+        deliver()
+    except Exception as exc:  # noqa: BLE001
+        print(f"LINE配信に失敗(スキップ): {exc}", file=sys.stderr)
+
 
 def attach_news(merged: pd.DataFrame) -> pd.DataFrame:
     """TDnet 適時開示の感情スコアを news_* 列として合流させる。

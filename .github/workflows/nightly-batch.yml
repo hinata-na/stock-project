@@ -24,6 +24,10 @@ jobs:
       - name: Run batch
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # 以下2つはスイング候補のLINEプッシュ配信(swing_push.py)用。
+          # 未設定なら配信だけスキップされ、バッチ自体は正常終了する
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
         run: python batch.py
 
       - name: Commit data
