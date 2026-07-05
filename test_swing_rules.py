@@ -182,6 +182,30 @@ def test_evaluate_slippage_applied_to_exit_only():
     assert ev["exit_price"] == round(1060.0 * 0.999, 1)
 
 
+def test_card_template_explanations():
+    from swing_push import _build_explanations
+
+    cards = _build_explanations(
+        [
+            {
+                "code": "9999",
+                "volume_ratio": "3.5",
+                "rsi14": "64.8",
+                "ma25": "1064.7",
+                "daily_gain_pct": "3.7",
+                "turnover_oku_yen": "2.9",
+                "breakout_days": 75,
+            }
+        ]
+    )
+    card = cards["9999"]
+    # 二層が同一の事実(高値更新・出来高急増)を語っていること
+    assert "高値" in card.easy and "3.5倍" in card.easy
+    assert "ブレイク" in card.technical and "3.5倍" in card.technical
+    assert "RSI" not in card.easy, "やさしい説明に専門用語を入れない"
+    assert "RSI14は65" in card.technical
+
+
 if __name__ == "__main__":
     import sys
 

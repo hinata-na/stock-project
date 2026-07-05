@@ -160,20 +160,27 @@ def main() -> None:
         print(f"取得成功が {len(merged)}/{len(universe)} 件のみのため中断", file=sys.stderr)
         sys.exit(1)
 
-    merged = attach_news(merged)
+    merged, disclosures = attach_news(merged)
+
+    # スイング候補の抽出とシャドーランの答え合わせ(Phase 8)。
+    # 失敗しても中核のスクリーニングデータは壊さない
+    swing_codes: list[str] = []
+    try:
+        from swing_batch import run_nightly
+
+        swing_codes = run_nightly(hists, dict(zip(merged["code"], merged["name"])), dict(zip(merged["code"], merged["market_cap_oku_yen"])))
+    except Exception as exc:  # noqa: BLE001
+        print(f"スイング候補の処理に失敗(スキップ): {exc}", file=sys.stderr)
+
+    # 感情採点はスイング候補・追跡中銘柄だけに絞る(Gemini無料枠20回/日対策で最大1回)
+    try:
+        merged = attach_candidate_sentiment(merged, set(swing_codes), disclosures)
+    except Exception as exc:  # noqa: BLE001
+        print(f"候補銘柄の感情採点に失敗(スキップ): {exc}", file=sys.stderr)
 
     DATA_PATH.parent.mkdir(exist_ok=True)
     merged.to_csv(DATA_PATH, index=False)
     print(f"保存完了: {DATA_PATH} ({len(merged)} 銘柄, {time.time() - start:.0f}秒)")
-
-    # スイング候補の抽出とシャドーランの答え合わせ(Phase 8)。
-    # 失敗しても中核のスクリーニングデータは壊さない
-    try:
-        from swing_batch import run_nightly
-
-        run_nightly(hists, dict(zip(merged["code"], merged["name"])), dict(zip(merged["code"], merged["market_cap_oku_yen"])))
-    except Exception as exc:  # noqa: BLE001
-        print(f"スイング候補の処理に失敗(スキップ): {exc}", file=sys.stderr)
 
     # 候補カードのLINEプッシュ配信(Phase 9)。データ生成とは独立に失敗させる
     try:
@@ -184,15 +191,18 @@ def main() -> None:
         print(f"LINE配信に失敗(スキップ): {exc}", file=sys.stderr)
 
 
-def attach_news(merged: pd.DataFrame) -> pd.DataFrame:
-    """TDnet 適時開示の感情スコアを news_* 列として合流させる。
+def attach_news(merged: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """TDnet 適時開示の件数・日付を news_* 列として合流させる(Gemini不使用)。
 
-    ニュースは補助的な特徴量なので、取得や採点に失敗しても
+    感情スコア列(news_sentiment/news_label)はここでは空のまま作り、
+    後段の attach_candidate_sentiment がスイング候補銘柄だけを埋める。
+    ニュースは補助的な特徴量なので、取得に失敗しても
     中核のスクリーニングデータは壊さず、列だけ空にして続行する。
     """
     news_cols = ["news_count", "news_sentiment", "news_label", "news_latest"]
+    disclosures: dict = {}
     try:
-        features = build_news_features(codes=set(merged["code"]))
+        features, disclosures = build_news_features(codes=set(merged["code"]))
     except Exception as exc:  # noqa: BLE001
         print(f"ニュース特徴量の取得に失敗(スキップ): {exc}", file=sys.stderr)
         features = {}
@@ -206,8 +216,25 @@ def attach_news(merged: pd.DataFrame) -> pd.DataFrame:
     merged = merged.drop(columns=[c for c in news_cols if c in merged.columns])
     merged = merged.merge(news_df[["code", *news_cols]], on="code", how="left")
     merged["news_count"] = merged["news_count"].fillna(0).astype(int)
-    matched = int((merged["news_sentiment"].notna()).sum())
-    print(f"ニュース採点済み: {matched} 銘柄", flush=True)
+    print(f"開示あり: {len(features)} 銘柄", flush=True)
+    return merged, disclosures
+
+
+def attach_candidate_sentiment(
+    merged: pd.DataFrame, codes: set[str], disclosures: dict
+) -> pd.DataFrame:
+    """スイング候補・追跡中銘柄の開示だけを感情採点して列を埋める(Gemini最大1回)。"""
+    from news import score_sentiments
+
+    target = {c: v for c, v in disclosures.items() if c in codes}
+    if not target:
+        return merged
+    scores = score_sentiments(target)
+    for code, s in scores.items():
+        mask = merged["code"] == code
+        merged.loc[mask, "news_sentiment"] = s["sentiment"]
+        merged.loc[mask, "news_label"] = s["label"]
+    print(f"感情採点(候補銘柄のみ): {len(scores)} 銘柄", flush=True)
     return merged
 
 

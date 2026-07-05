@@ -5,8 +5,8 @@ data/swing_status.json と data/candidates.csv から通知文を組み立てて
 ALLOWED_USER_IDS の全員にプッシュする。
 
 - 判定・数値はルールエンジン(swing_rules)が出したものをそのまま表示する。
-  Gemini は「やさしい説明」「専門用語での説明」の文章化のみを担当し、
-  失敗した場合は数値だけのカードで配信を続行する(配信自体は止めない)
+  「やさしい説明」「専門用語での説明」は根拠数値を埋め込んだテンプレートで生成する
+  (Gemini無料枠が20リクエスト/日に縮小されたため、配信経路からGemini依存を排除した)
 - ローカル確認: python swing_push.py --dry-run (LINEに送らず本文を表示)
 
 LINE Push API は無料プランで月200通まで。1晩1通×ユーザー数なので
@@ -34,49 +34,41 @@ class CardText(BaseModel):
     technical: str  # 専門用語での説明(同じ根拠を指標名で)
 
 
-def _generate_explanations(candidates: list[dict]) -> dict[str, CardText]:
-    """Gemini で二層の説明文を生成する(1晩1回の呼び出し)。失敗時は空dict。"""
-    from google import genai
-    from google.genai import types
+def _build_explanations(candidates: list[dict]) -> dict[str, CardText]:
+    """根拠数値をテンプレートに埋め込んで二層の説明文を作る(Gemini不使用・決定論的)。
 
-    from screening import GEMINI_MODEL
+    やさしい説明と専門用語の説明は同一の事実(高値更新と出来高急増)を語る。
+    """
+    result = {}
+    for c in candidates:
+        vol = float(c["volume_ratio"])
+        rsi = float(c["rsi14"])
+        gain = float(c["daily_gain_pct"])
+        breakout = int(c.get("breakout_days", 75))
 
-    prompt = """あなたは投資初心者向けに株の買い候補を説明するアシスタントです。
-以下は機械的なルールで抽出された「高値ブレイクアウト」の買い候補です。
-各銘柄について、同一の根拠を2通りで説明してください:
-- easy: 専門用語を使わず日常の言葉で2文程度。「大勢が注目し始めた瞬間は数日上がりやすい」のような
-  値動きの背景がイメージできる説明にする
-- technical: 移動平均・RSI・出来高倍率などの用語を使って2文程度
+        if rsi < 60:
+            heat_easy = "上昇はまだ始まったばかりの水準です。"
+            heat_tech = "過熱圏(70超)までは余裕がある"
+        elif rsi < 70:
+            heat_easy = "勢いはありますが過熱一歩手前なので、決めた値段より高くは追いかけないでください。"
+            heat_tech = "過熱圏(70超)の一歩手前"
+        else:
+            heat_easy = "やや過熱気味なので、指値を守ることが特に重要です。"
+            heat_tech = "過熱圏に入りかけ"
 
-データの見方: breakout_days=何日ぶりの高値更新か, volume_ratio=出来高が20日平均の何倍か,
-rsi14=RSI(70超で過熱気味), ma25=25日移動平均, daily_gain_pct=当日の上昇率%,
-turnover_oku_yen=1日の平均売買代金(億円)。
-easy と technical は必ず同じ事実(高値更新と出来高急増)に言及してください。
-出力はプレーンテキスト(マークダウン記法禁止)。"""
-
-    payload = [
-        {k: c[k] for k in ("code", "name", "breakout_days", "volume_ratio", "rsi14", "ma25", "daily_gain_pct", "turnover_oku_yen") if k in c}
-        for c in candidates
-    ]
-    try:
-        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=str(payload),
-            config=types.GenerateContentConfig(
-                system_instruction=prompt,
-                response_mime_type="application/json",
-                response_schema=list[CardText],
-            ),
+        easy = (
+            f"過去{breakout}営業日(約3ヶ月半)で一度も付けなかった高値を、"
+            f"普段の{vol:.1f}倍の売買量を伴って上抜けました。"
+            f"大勢の投資家が注目し始めたサインで、この形の銘柄は数日〜数週間、上に動きやすい傾向があります。"
+            f"{heat_easy}"
         )
-        cards = [CardText.model_validate(c) for c in json.loads(response.text)]
-        return {c.code: c for c in cards}
-    except Exception as exc:  # noqa: BLE001
-        # 説明文が無くても数値カードだけで配信は続行するが、原因は必ず記録する
-        import sys
-
-        print(f"説明文の生成に失敗(数値のみで配信): {exc}", file=sys.stderr)
-        return {}
+        technical = (
+            f"{breakout}日終値高値をブレイク。出来高は20日平均比{vol:.1f}倍、"
+            f"当日騰落率+{gain:.1f}%。RSI14は{rsi:.0f}で{heat_tech}。"
+            f"終値はMA25({float(c['ma25']):,.0f}円)の上方、20日平均売買代金は{float(c['turnover_oku_yen']):.1f}億円。"
+        )
+        result[c["code"]] = CardText(code=c["code"], easy=easy, technical=technical)
+    return result
 
 
 def _yen(value) -> str:
@@ -117,6 +109,19 @@ def _tracking_lines() -> list[str]:
     return lines
 
 
+def _news_lookup() -> dict[str, dict]:
+    """screener.csv から、感情採点済み(ポジティブ/ネガティブ)の銘柄だけを引く。"""
+    path = Path(__file__).parent / "data" / "screener.csv"
+    if not path.exists():
+        return {}
+    df = pd.read_csv(path, dtype={"code": str})
+    scored = df[df["news_label"].isin(["ポジティブ", "ネガティブ"])]
+    return {
+        r["code"]: {"label": r["news_label"], "sentiment": r["news_sentiment"]}
+        for _, r in scored.iterrows()
+    }
+
+
 def build_message(status: dict, explanations: dict[str, CardText]) -> str:
     """swing_status.json の内容から通知本文を組み立てる(純粋関数、テスト可能)。"""
     candidates = status.get("candidates", [])
@@ -148,6 +153,9 @@ def build_message(status: dict, explanations: dict[str, CardText]) -> str:
                 parts.append(f"※次回決算: {row['earnings_date']}")
             else:
                 parts.append("※決算日を取得できませんでした。近日の決算予定がないかIR等で確認を")
+            news = _news_lookup().get(code)
+            if news:
+                parts.append(f"※直近の適時開示に{news['label']}材料あり(スコア{news['sentiment']})")
 
     tracking = _tracking_lines()
     # 当日の新規候補は「約定待ち」として追跡にも載るため、重複表示を避ける
@@ -197,7 +205,7 @@ def deliver(dry_run: bool = False) -> None:
 
     explanations = {}
     if status.get("candidates"):
-        explanations = _generate_explanations(_full_candidates(status))
+        explanations = _build_explanations(_full_candidates(status))
 
     text = build_message(status, explanations)
     if dry_run:

@@ -136,8 +136,12 @@ def run_nightly(
     hists: dict[str, pd.DataFrame],
     names: dict[str, str],
     market_caps: dict[str, float],
-) -> None:
-    """batch.py から呼ばれるエントリポイント。"""
+) -> list[str]:
+    """batch.py から呼ばれるエントリポイント。
+
+    当日候補+追跡中(約定待ち/保有中)の銘柄コードを返す。
+    batch.py はこの銘柄だけをニュース感情採点の対象にする(Gemini無料枠対策)。
+    """
     df = _load_candidates()
     n_updated = _update_open_candidates(df, hists)
 
@@ -198,3 +202,6 @@ def run_nightly(
         + f", 答え合わせ更新: {n_updated}件",
         flush=True,
     )
+
+    tracked = set(df[df["status"].isin(["約定待ち", "保有中"])]["code"])
+    return sorted(tracked | {c["code"] for c in status["candidates"]})

@@ -110,24 +110,21 @@ def score_sentiments(disclosures: dict[str, dict]) -> dict[str, dict]:
 
 def build_news_features(
     codes: set[str] | None = None, days: int = LOOKBACK_DAYS
-) -> dict[str, dict]:
-    """銘柄コード -> {news_count, news_sentiment, news_label, news_latest} を返す。
+) -> tuple[dict[str, dict], dict[str, dict]]:
+    """銘柄コード -> {news_count, news_latest} と、開示の生データを返す。
 
-    codes を渡すと、その銘柄(=スクリーニング対象のプライム銘柄)だけを
-    Gemini で採点する。全市場を採点すると呼び出し回数が無駄に増えるため。
+    ここでは Gemini を使わない(開示の取得・件数化は無料)。
+    感情スコア化は無料枠が20リクエスト/日しかないため全銘柄には行わず、
+    呼び出し側がスイング候補銘柄だけを score_sentiments() で採点する。
     """
     disclosures = fetch_disclosures(days)
     if codes is not None:
         disclosures = {c: v for c, v in disclosures.items() if c in codes}
-    scores = score_sentiments(disclosures)
 
     features: dict[str, dict] = {}
     for code, info in disclosures.items():
-        score = scores.get(code, {})
         features[code] = {
             "news_count": info["count"],
-            "news_sentiment": score.get("sentiment"),
-            "news_label": score.get("label"),
             "news_latest": info["latest"],
         }
-    return features
+    return features, disclosures
