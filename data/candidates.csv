@@ -1,0 +1,4 @@
+signal_date,code,name,entry_limit,take_profit,stop_loss,time_stop_days,volume_ratio,rsi14,ma25,daily_gain_pct,turnover_oku_yen,earnings_date,status,entry_date,entry_price,exit_date,exit_price,result,pnl_pct,days_held
+2026-07-03,8818,京阪神ビルディング,1129.0,1208.0,1050.0,20,3.5,64.8,1064.7,3.7,2.9,,約定待ち,,,,,,,
+2026-07-03,7283,愛三工業,2147.0,2297.3,1996.7,20,2.8,71.4,1869.3,8.2,5.1,,約定待ち,,,,,,,
+2026-07-03,4071,プラスアルファ・コンサルティング,2906.0,3109.4,2702.6,20,2.6,72.8,2622.0,7.2,5.9,,約定待ち,,,,,,,
