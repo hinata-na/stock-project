@@ -137,8 +137,11 @@ def compose_judgement(
     return "\n".join(lines)
 
 
-def judge_timing(query: str) -> str:
-    """銘柄名/コードを受け取り、買い時・売り時・様子見の判定文を返す。"""
+def judge_timing(query: str, user_id: str = "") -> str:
+    """銘柄名/コードを受け取り、買い時・売り時・様子見の判定文を返す。
+
+    user_id は発言者(LINEのuser_id)。保有判定・予算は本人の台帳だけを見る。
+    """
     candidates = resolve_company(query)
 
     if not candidates:
@@ -156,16 +159,16 @@ def judge_timing(query: str) -> str:
     try:
         import ledger
 
-        if ledger.is_configured():
-            position = ledger.current_state()["positions"].get(code)
+        if ledger.is_configured() and user_id:
+            position = ledger.current_state(user_id)["positions"].get(code)
     except Exception:
         position = None  # 台帳が読めなくても判定自体は続行する
 
-    # 予算(台帳の余力 or 固定値)は夜間バッチの候補選定と同じロジックを使う
+    # 予算(本人の台帳の余力 or 固定値)は夜間バッチの候補選定と同じロジックを使う
     try:
         from swing_batch import _params_with_budget
 
-        params = _params_with_budget()[0]
+        params = _params_with_budget(user_id)[0]
     except Exception:
         params = DEFAULT_PARAMS
 

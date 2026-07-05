@@ -52,11 +52,12 @@ async def callback(request: Request):
     return "OK"
 
 
-def generate_reply(user_text: str) -> str:
+def generate_reply(user_text: str, user_id: str) -> str:
     """ユーザーの発言から返信文を作る。
 
     Gemini で自然言語をスクリーニング条件に変換し、
     夜間バッチで生成済みの銘柄データをフィルタして結果を返す。
+    台帳・個別銘柄判断は発言者(user_id)ごとに分離される。
     """
     try:
         conditions = parse_screening_conditions(user_text)
@@ -65,13 +66,13 @@ def generate_reply(user_text: str) -> str:
 
     if conditions.ledger_event:
         try:
-            return handle_ledger_event(conditions, user_text)
+            return handle_ledger_event(conditions, user_id, user_text)
         except Exception:
             return "台帳の処理に失敗しました。時間をおいてもう一度お試しください。"
 
     if conditions.company_name:
         try:
-            return judge_timing(conditions.company_name)
+            return judge_timing(conditions.company_name, user_id)
         except Exception:
             return "判断の生成に失敗しました。時間をおいてもう一度お試しください。"
 
@@ -104,7 +105,7 @@ def handle_text_message(event):
     if ALLOWED_USER_IDS and user_id not in ALLOWED_USER_IDS:
         reply = "現在このBotは限定公開です。"
     else:
-        reply = generate_reply(event.message.text)
+        reply = generate_reply(event.message.text, user_id)
 
     with ApiClient(configuration) as api_client:
         MessagingApi(api_client).reply_message(

@@ -11,6 +11,7 @@ batch.py の最後から呼ばれ、以下を行う:
 """
 
 import json
+import os
 import sys
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -59,15 +60,30 @@ def _fetch_index_hist() -> pd.DataFrame:
     return hist
 
 
+_earnings_cache: dict[str, date | None] = {}
+
+
 def _fetch_earnings_date(code: str) -> date | None:
-    """次回の決算発表日(取れなければ None)。候補銘柄のみに使う。"""
+    """次回の決算発表日(取れなければ None)。候補・保有銘柄のみに使う。
+
+    ユーザーごとの候補選定で同じ銘柄を重複照会しないよう、プロセス内でキャッシュする。
+    """
+    if code in _earnings_cache:
+        return _earnings_cache[code]
     try:
         session = cffi_requests.Session(impersonate="chrome")
         cal = yf.Ticker(f"{code}.T", session=session).calendar
         dates = cal.get("Earnings Date") if cal else None
-        return min(dates) if dates else None
+        result = min(dates) if dates else None
     except Exception:
-        return None
+        result = None
+    _earnings_cache[code] = result
+    return result
+
+
+def _allowed_user_ids() -> list[str]:
+    """配信・台帳の対象ユーザー(LINEのuser_id)。swing_push と同じ環境変数を使う。"""
+    return [u.strip() for u in os.environ.get("ALLOWED_USER_IDS", "").split(",") if u.strip()]
 
 
 def _load_candidates() -> pd.DataFrame:
@@ -105,8 +121,8 @@ def _update_open_candidates(df: pd.DataFrame, hists: dict[str, pd.DataFrame]) ->
     return updated
 
 
-def _params_with_budget() -> tuple[SwingParams, str, list[str]]:
-    """台帳(Supabase)が設定済みなら余力を予算に使う(Phase 10b)。
+def _params_with_budget(user_id: str) -> tuple[SwingParams, str, list[str]]:
+    """台帳(Supabase)が設定済みなら本人の余力を予算に使う(Phase 10b)。
 
     (使用パラメータ, 予算の説明文, 注記) を返す。
     台帳未設定・イベント0件・取得失敗時は固定予算にフォールバックする。
@@ -115,9 +131,9 @@ def _params_with_budget() -> tuple[SwingParams, str, list[str]]:
     try:
         import ledger
 
-        if not ledger.is_configured():
+        if not ledger.is_configured() or not user_id:
             return DEFAULT_PARAMS, fixed, []
-        events = ledger.fetch_events()
+        events = ledger.fetch_events(user_id)
         if not events:
             return DEFAULT_PARAMS, f"{fixed}(台帳が空)", []
         cash = ledger.compute_state(events)["cash"]
@@ -133,31 +149,46 @@ def _params_with_budget() -> tuple[SwingParams, str, list[str]]:
         return DEFAULT_PARAMS, f"{fixed}(台帳取得失敗)", []
 
 
-def _find_today_candidates(
+def _find_ranked_setups(
     hists: dict[str, pd.DataFrame],
     market_caps: dict[str, float],
-    holding_codes: set[str],
-    params: SwingParams,
-) -> tuple[list[dict], list[str]]:
-    """当日のセットアップを全銘柄から探し、(採用候補, 除外メモ) を返す。"""
+    tracked_codes: set[str],
+) -> list[dict]:
+    """当日のセットアップを全銘柄から探し、出来高倍率順に返す(全ユーザー共通)。
+
+    予算はユーザーごとに異なるため、ここでは予算条件なしで探索し、
+    _pick_for_user が本人の予算でフィルタする。
+    """
+    base_params = replace(DEFAULT_PARAMS, budget_yen=None)
     setups = []
     for code, hist in hists.items():
         cap = market_caps.get(code)
         if cap is None or pd.isna(cap) or cap < MARKET_CAP_MIN_OKU:
             continue
-        if code in holding_codes:
+        if code in tracked_codes:
             continue  # すでに追跡中の銘柄は重複して出さない
-        setup = find_setup(hist, params)
+        setup = find_setup(hist, base_params)
         if setup:
             setup["code"] = code
             setups.append(setup)
+    return rank_candidates(setups, max_count=len(setups))
 
-    # 出来高倍率順に見て、決算接近を除外しながら最大数まで採用
+
+def _pick_for_user(
+    ranked_setups: list[dict],
+    params: SwingParams,
+    holding_codes: set[str],
+) -> tuple[list[dict], list[str]]:
+    """共通のセットアップ一覧から、本人の予算・保有で絞って最大数まで採用する。"""
     notes = []
     picked = []
-    for setup in rank_candidates(setups, max_count=len(setups)):
+    for setup in ranked_setups:
         if len(picked) >= MAX_CANDIDATES:
             break
+        if setup["code"] in holding_codes:
+            continue  # 本人が実際に保有している銘柄は新規候補に出さない
+        if params.budget_yen is not None and setup["unit_cost_yen"] > params.budget_yen:
+            continue
         earnings = _fetch_earnings_date(setup["code"])
         if earnings and (earnings - date.today()).days <= EARNINGS_EXCLUDE_DAYS:
             notes.append(f"{setup['code']}: 決算接近({earnings})のため除外")
@@ -167,8 +198,8 @@ def _find_today_candidates(
     return picked, notes
 
 
-def _check_real_holdings(hists: dict[str, pd.DataFrame]) -> list[dict]:
-    """台帳の実保有に対する毎晩の出口判定(Phase 10c)。
+def _check_real_holdings(hists: dict[str, pd.DataFrame], user_id: str) -> list[dict]:
+    """本人の台帳の実保有に対する毎晩の出口判定(Phase 10c)。
 
     実際の建値(平均取得単価)を基準に、利確/損切りライン・時間切れ(登録日から
     20営業日)・決算接近を判定し、警告付きの保有リストを返す。
@@ -177,9 +208,9 @@ def _check_real_holdings(hists: dict[str, pd.DataFrame]) -> list[dict]:
     try:
         import ledger
 
-        if not ledger.is_configured():
+        if not ledger.is_configured() or not user_id:
             return []
-        positions = ledger.current_state()["positions"]
+        positions = ledger.current_state(user_id)["positions"]
     except Exception as exc:  # noqa: BLE001
         print(f"実保有の取得に失敗(スキップ): {exc}", file=sys.stderr)
         return []
@@ -233,80 +264,99 @@ def run_nightly(
 
     当日候補+追跡中(約定待ち/保有中)の銘柄コードを返す。
     batch.py はこの銘柄だけをニュース感情採点の対象にする(Gemini無料枠対策)。
+
+    候補選定はユーザー(ALLOWED_USER_IDS)ごとに本人の予算・保有で行う。
+    公開ファイル(candidates.csv / swing_status.json)には全ユーザーの候補の
+    和集合をユーザー帰属なしで記録し(余力・保有が推測できる情報を残さない)、
+    ユーザー別の予算・保有・配信候補は swing_private.json に書く。
     """
     df = _load_candidates()
     n_updated = _update_open_candidates(df, hists)
 
     index_hist = _fetch_index_hist()
     data_date = max((h.index[-1].date() for h in hists.values()), default=date.today())
-    params, budget_label, budget_notes = _params_with_budget()
-    regime_ok = market_regime_ok(index_hist, params)
-
-    real_holdings = _check_real_holdings(hists)
+    regime_ok = market_regime_ok(index_hist, DEFAULT_PARAMS)
 
     # swing_status.json はパブリックリポジトリにコミットされるため、
-    # 実保有(資産情報)は入れない。保有は swing_private.json 側に書く
+    # 実保有・余力(資産情報)は入れない。それらは swing_private.json 側に書く
     status = {
         "date": str(data_date),
         "run_at": datetime.now().isoformat(timespec="seconds"),
         "regime_ok": bool(regime_ok),
-        "budget": budget_label,
         "evaluated": n_updated,
         "candidates": [],
-        "notes": list(budget_notes),
+        "notes": [],
     }
+
+    # ユーザー未設定(ローカル確認など)でも従来通り固定予算の1人分として動かす
+    user_ids = _allowed_user_ids() or [""]
+    tracked_codes = set(df[df["status"].isin(["約定待ち", "保有中"])]["code"])
+
+    ranked_setups = _find_ranked_setups(hists, market_caps, tracked_codes) if regime_ok else []
+
+    users: dict[str, dict] = {}
+    union: dict[str, dict] = {}  # code -> setup(全ユーザーの採用候補の和集合)
+    all_holding_codes: set[str] = set()
+    for user_id in user_ids:
+        params, budget_label, budget_notes = _params_with_budget(user_id)
+        holdings = _check_real_holdings(hists, user_id)
+        all_holding_codes |= {h["code"] for h in holdings}
+        picked, notes = _pick_for_user(ranked_setups, params, {h["code"] for h in holdings})
+        for setup in picked:
+            union.setdefault(setup["code"], setup)
+        users[user_id or "local"] = {
+            "budget": budget_label,
+            "notes": budget_notes,
+            "holdings": holdings,
+            "candidates": [s["code"] for s in picked],
+        }
+        for note in notes:
+            if note not in status["notes"]:  # 決算除外は全ユーザー共通の事実
+                status["notes"].append(note)
 
     if not regime_ok:
         status["reason"] = "地合い悪化(日経平均がMA25未満)のため候補なし"
+    elif not union:
+        status["reason"] = "条件に該当する銘柄なし"
     else:
-        # シャドーランの追跡中銘柄と、台帳上の実保有銘柄は新規候補から除外
-        holding = set(df[df["status"].isin(["約定待ち", "保有中"])]["code"])
-        holding |= {h["code"] for h in real_holdings}
-        picked, notes = _find_today_candidates(hists, market_caps, holding, params)
-        status["notes"].extend(notes)
-        if not picked:
-            status["reason"] = "条件に該当する銘柄なし"
-        else:
-            new_rows = []
-            for setup in picked:
-                code = setup["code"]
-                new_rows.append(
-                    {
-                        "signal_date": str(data_date),
-                        "code": code,
-                        "name": names.get(code, ""),
-                        "entry_limit": setup["entry_limit"],
-                        "take_profit": setup["take_profit"],
-                        "stop_loss": setup["stop_loss"],
-                        "time_stop_days": setup["time_stop_days"],
-                        "volume_ratio": setup["volume_ratio"],
-                        "rsi14": setup["rsi14"],
-                        "ma25": setup["ma25"],
-                        "daily_gain_pct": setup["daily_gain_pct"],
-                        "turnover_oku_yen": setup["turnover_oku_yen"],
-                        "earnings_date": str(setup["earnings_date"]) if setup["earnings_date"] else "",
-                        "status": "約定待ち",
-                    }
-                )
-                status["candidates"].append({"code": code, "name": names.get(code, ""), **{k: setup[k] for k in ("entry_limit", "take_profit", "stop_loss", "volume_ratio")}})
-            # バッチ再実行時の重複防止: 同じシグナル日の既存行は総入れ替え
-            # (シグナル当日の行は翌営業日まで動きようがないため安全に消せる)
-            df = df[df["signal_date"] != str(data_date)]
-            df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+        new_rows = []
+        for code, setup in union.items():
+            new_rows.append(
+                {
+                    "signal_date": str(data_date),
+                    "code": code,
+                    "name": names.get(code, ""),
+                    "entry_limit": setup["entry_limit"],
+                    "take_profit": setup["take_profit"],
+                    "stop_loss": setup["stop_loss"],
+                    "time_stop_days": setup["time_stop_days"],
+                    "volume_ratio": setup["volume_ratio"],
+                    "rsi14": setup["rsi14"],
+                    "ma25": setup["ma25"],
+                    "daily_gain_pct": setup["daily_gain_pct"],
+                    "turnover_oku_yen": setup["turnover_oku_yen"],
+                    "earnings_date": str(setup["earnings_date"]) if setup["earnings_date"] else "",
+                    "status": "約定待ち",
+                }
+            )
+            status["candidates"].append({"code": code, "name": names.get(code, ""), **{k: setup[k] for k in ("entry_limit", "take_profit", "stop_loss", "volume_ratio")}})
+        # バッチ再実行時の重複防止: 同じシグナル日の既存行は総入れ替え
+        # (シグナル当日の行は翌営業日まで動きようがないため安全に消せる)
+        df = df[df["signal_date"] != str(data_date)]
+        df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
 
     df.reindex(columns=CSV_COLUMNS).to_csv(CANDIDATES_PATH, index=False)
     STATUS_PATH.write_text(json.dumps(status, ensure_ascii=False, indent=1), encoding="utf-8")
     PRIVATE_PATH.write_text(
-        json.dumps({"holdings": real_holdings}, ensure_ascii=False, indent=1, default=str),
+        json.dumps({"users": users}, ensure_ascii=False, indent=1, default=str),
         encoding="utf-8",
     )
     print(
-        f"スイング候補: {len(status['candidates'])}件"
+        f"スイング候補: {len(status['candidates'])}件(ユーザー{len(users)}人の和集合)"
         + (f"(理由: {status.get('reason')})" if status.get("reason") else "")
         + f", 答え合わせ更新: {n_updated}件",
         flush=True,
     )
 
     tracked = set(df[df["status"].isin(["約定待ち", "保有中"])]["code"])
-    real = {h["code"] for h in real_holdings}
-    return sorted(tracked | real | {c["code"] for c in status["candidates"]})
+    return sorted(tracked | all_holding_codes | {c["code"] for c in status["candidates"]})
