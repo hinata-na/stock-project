@@ -28,6 +28,9 @@ jobs:
           # 未設定なら配信だけスキップされ、バッチ自体は正常終了する
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           ALLOWED_USER_IDS: ${{ secrets.ALLOWED_USER_IDS }}
+          # 以下2つは取引台帳(ledger.py)用。未設定なら固定予算30万円で動く
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python batch.py
 
       - name: Commit data

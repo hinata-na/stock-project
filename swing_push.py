@@ -167,6 +167,8 @@ def build_message(status: dict, explanations: dict[str, CardText]) -> str:
 
     parts.append("")
     parts.append(f"地合い: {'OK(日経平均はMA25上)' if status.get('regime_ok') else 'NG(日経平均がMA25未満)'}")
+    if status.get("budget"):
+        parts.append(f"予算: {status['budget']}")
     parts.append(_shadow_stats())
     return "\n".join(parts)
 

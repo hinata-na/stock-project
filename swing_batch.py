@@ -11,6 +11,8 @@ batch.py の最後から呼ばれ、以下を行う:
 """
 
 import json
+import sys
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from curl_cffi import requests as cffi_requests
 
 from swing_rules import (
     DEFAULT_PARAMS,
+    SwingParams,
     evaluate_after_signal,
     find_setup,
     market_regime_ok,
@@ -99,10 +102,39 @@ def _update_open_candidates(df: pd.DataFrame, hists: dict[str, pd.DataFrame]) ->
     return updated
 
 
+def _params_with_budget() -> tuple[SwingParams, str, list[str]]:
+    """台帳(Supabase)が設定済みなら余力を予算に使う(Phase 10b)。
+
+    (使用パラメータ, 予算の説明文, 注記) を返す。
+    台帳未設定・イベント0件・取得失敗時は固定予算にフォールバックする。
+    """
+    fixed = f"固定{DEFAULT_PARAMS.budget_yen / 10000:,.0f}万円"
+    try:
+        import ledger
+
+        if not ledger.is_configured():
+            return DEFAULT_PARAMS, fixed, []
+        events = ledger.fetch_events()
+        if not events:
+            return DEFAULT_PARAMS, f"{fixed}(台帳が空)", []
+        cash = ledger.compute_state(events)["cash"]
+        if cash <= 0:
+            return (
+                replace(DEFAULT_PARAMS, budget_yen=0.0),
+                "余力0円(台帳)",
+                [f"台帳の余力が{cash:,.0f}円のため新規候補なし"],
+            )
+        return replace(DEFAULT_PARAMS, budget_yen=float(cash)), f"余力{cash / 10000:,.1f}万円(台帳)", []
+    except Exception as exc:  # noqa: BLE001
+        print(f"台帳の取得に失敗(固定予算にフォールバック): {exc}", file=sys.stderr)
+        return DEFAULT_PARAMS, f"{fixed}(台帳取得失敗)", []
+
+
 def _find_today_candidates(
     hists: dict[str, pd.DataFrame],
     market_caps: dict[str, float],
     holding_codes: set[str],
+    params: SwingParams,
 ) -> tuple[list[dict], list[str]]:
     """当日のセットアップを全銘柄から探し、(採用候補, 除外メモ) を返す。"""
     setups = []
@@ -112,7 +144,7 @@ def _find_today_candidates(
             continue
         if code in holding_codes:
             continue  # すでに追跡中の銘柄は重複して出さない
-        setup = find_setup(hist, DEFAULT_PARAMS)
+        setup = find_setup(hist, params)
         if setup:
             setup["code"] = code
             setups.append(setup)
@@ -147,23 +179,25 @@ def run_nightly(
 
     index_hist = _fetch_index_hist()
     data_date = max((h.index[-1].date() for h in hists.values()), default=date.today())
-    regime_ok = market_regime_ok(index_hist, DEFAULT_PARAMS)
+    params, budget_label, budget_notes = _params_with_budget()
+    regime_ok = market_regime_ok(index_hist, params)
 
     status = {
         "date": str(data_date),
         "run_at": datetime.now().isoformat(timespec="seconds"),
         "regime_ok": bool(regime_ok),
+        "budget": budget_label,
         "evaluated": n_updated,
         "candidates": [],
-        "notes": [],
+        "notes": list(budget_notes),
     }
 
     if not regime_ok:
         status["reason"] = "地合い悪化(日経平均がMA25未満)のため候補なし"
     else:
         holding = set(df[df["status"].isin(["約定待ち", "保有中"])]["code"])
-        picked, notes = _find_today_candidates(hists, market_caps, holding)
-        status["notes"] = notes
+        picked, notes = _find_today_candidates(hists, market_caps, holding, params)
+        status["notes"].extend(notes)
         if not picked:
             status["reason"] = "条件に該当する銘柄なし"
         else:

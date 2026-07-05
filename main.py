@@ -16,6 +16,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
+from ledger import handle_ledger_event
 from screener import run_screening
 from screening import format_conditions, generate_commentary, parse_screening_conditions
 from stock_lookup import judge_timing
@@ -61,6 +62,12 @@ def generate_reply(user_text: str) -> str:
         conditions = parse_screening_conditions(user_text)
     except Exception:
         return "条件の解析に失敗しました。時間をおいてもう一度お試しください。"
+
+    if conditions.ledger_event:
+        try:
+            return handle_ledger_event(conditions, user_text)
+        except Exception:
+            return "台帳の処理に失敗しました。時間をおいてもう一度お試しください。"
 
     if conditions.company_name:
         try:
