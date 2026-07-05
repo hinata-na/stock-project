@@ -5,6 +5,7 @@ import pandas as pd
 
 from swing_rules import (
     DEFAULT_PARAMS,
+    SwingParams,
     evaluate_after_signal,
     find_setup,
     market_regime_ok,
@@ -81,6 +82,14 @@ def test_short_history_rejected():
 def test_illiquid_rejected():
     hist = _add_breakout(_make_hist(volume=1_000))  # 売買代金が1億円未満
     assert find_setup(hist) is None
+
+
+def test_over_budget_rejected():
+    # 株価5000円 → 100株=約50万円で予算30万円を超える(出来高を増やして流動性は確保)
+    hist = _add_breakout(_make_hist(price=5000.0, volume=1_000_000))
+    assert find_setup(hist) is None
+    # 予算フィルタを無効にすれば通る(他の条件は満たしている)
+    assert find_setup(hist, SwingParams(budget_yen=None)) is not None
 
 
 def test_regime_filter():

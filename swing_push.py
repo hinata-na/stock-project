@@ -25,7 +25,7 @@ CANDIDATES_PATH = Path(__file__).parent / "data" / "candidates.csv"
 
 # シャドーランの決済がこの件数に達するまでは、参考値としてバックテストの数字を出す
 MIN_SHADOW_TRADES = 20
-BACKTEST_REFERENCE = "勝率56.1%・平均+1.49%(バックテスト2023-11〜2026-07)"
+BACKTEST_REFERENCE = "勝率57.7%・平均+1.61%(バックテスト2023-11〜2026-07)"
 
 
 class CardText(BaseModel):
@@ -135,6 +135,7 @@ def build_message(status: dict, explanations: dict[str, CardText]) -> str:
                 parts.append(f"{ex.easy}")
                 parts.append(f"《専門的には》{ex.technical}")
             parts.append("《注文レシピ》")
+            parts.append(f"・必要資金: 約{float(c['entry_limit']) * 100 / 10000:,.1f}万円(100株)")
             parts.append(f"・買い指値: {_yen(c['entry_limit'])}(これより高くは買わない)")
             parts.append(f"・利確 {_yen(c['take_profit'])} / 損切り {_yen(c['stop_loss'])} をOCOで同時に")
             time_stop = row["time_stop_days"] if row is not None else "8"

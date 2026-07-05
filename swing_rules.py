@@ -26,6 +26,7 @@ class SwingParams:
     # --- 除外条件 ---
     daily_gain_max_pct: float = 15.0   # 当日の上昇率がこれ以上(ストップ高級)は除外
     turnover_min_yen: float = 1e8      # 20日平均売買代金がこれ未満は流動性不足で除外
+    budget_yen: float | None = 300_000  # 100株の必要資金がこれを超える銘柄は除外(None で無効)
     # --- 出口 ---
     take_profit_pct: float = 7.0   # 利確ライン(エントリー価格比)
     stop_loss_pct: float = 7.0     # 損切りライン(エントリー価格比)
@@ -108,6 +109,11 @@ def find_setup(hist, params: SwingParams = DEFAULT_PARAMS) -> dict | None:
     if turnover < params.turnover_min_yen:
         return None
 
+    # 6) 予算: 単元(100株)の必要資金がユーザー予算を超える銘柄は除外。
+    #    シャドーランの実績を「実際に買える銘柄」だけで積むための制約でもある
+    if params.budget_yen is not None and today_close * 100 > params.budget_yen:
+        return None
+
     entry = today_close
     return {
         # --- 注文レシピ ---
@@ -115,6 +121,7 @@ def find_setup(hist, params: SwingParams = DEFAULT_PARAMS) -> dict | None:
         "take_profit": round(entry * (1 + params.take_profit_pct / 100), 1),
         "stop_loss": round(entry * (1 - params.stop_loss_pct / 100), 1),
         "time_stop_days": params.time_stop_days,
+        "unit_cost_yen": round(entry * 100),     # 100株の必要資金(カード表示用)
         # --- 根拠数値(説明文の材料) ---
         "breakout_days": params.breakout_days,
         "volume_ratio": round(volume_ratio, 1),
