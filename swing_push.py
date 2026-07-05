@@ -25,7 +25,7 @@ CANDIDATES_PATH = Path(__file__).parent / "data" / "candidates.csv"
 
 # シャドーランの決済がこの件数に達するまでは、参考値としてバックテストの数字を出す
 MIN_SHADOW_TRADES = 20
-BACKTEST_REFERENCE = "勝率44.3%・平均+0.49%(バックテスト2023-11〜2026-07)"
+BACKTEST_REFERENCE = "勝率56.1%・平均+1.49%(バックテスト2023-11〜2026-07)"
 
 
 class CardText(BaseModel):

@@ -27,9 +27,9 @@ class SwingParams:
     daily_gain_max_pct: float = 15.0   # 当日の上昇率がこれ以上(ストップ高級)は除外
     turnover_min_yen: float = 1e8      # 20日平均売買代金がこれ未満は流動性不足で除外
     # --- 出口 ---
-    take_profit_pct: float = 6.0   # 利確ライン(エントリー価格比)
-    stop_loss_pct: float = 4.0     # 損切りライン(エントリー価格比)
-    time_stop_days: int = 8        # エントリー後この営業日数で決着しなければ手仕舞い
+    take_profit_pct: float = 7.0   # 利確ライン(エントリー価格比)
+    stop_loss_pct: float = 7.0     # 損切りライン(エントリー価格比)
+    time_stop_days: int = 20       # エントリー後この営業日数で決着しなければ手仕舞い
     # --- 地合いフィルタ ---
     regime_ma_days: int = 25       # 指数の終値がこの移動平均を下回る日は候補なし
 

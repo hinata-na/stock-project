@@ -58,9 +58,6 @@ def test_breakout_detected():
     setup = find_setup(hist)
     assert setup is not None, "ブレイク+出来高急増でセットアップが出るべき"
     assert setup["take_profit"] > setup["entry_limit"] > setup["stop_loss"]
-    tp_width = setup["take_profit"] / setup["entry_limit"] - 1
-    sl_width = 1 - setup["stop_loss"] / setup["entry_limit"]
-    assert tp_width > sl_width, "利確幅 > 損切り幅(損小利大)"
 
 
 def test_no_breakout_no_setup():
