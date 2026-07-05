@@ -22,6 +22,8 @@ from pydantic import BaseModel
 
 STATUS_PATH = Path(__file__).parent / "data" / "swing_status.json"
 CANDIDATES_PATH = Path(__file__).parent / "data" / "candidates.csv"
+# 実保有(資産情報)はコミット対象外の swing_private.json から読む(swing_batch が生成)
+PRIVATE_PATH = Path(__file__).parent / "data" / "swing_private.json"
 
 # シャドーランの決済がこの件数に達するまでは、参考値としてバックテストの数字を出す
 MIN_SHADOW_TRADES = 20
@@ -115,6 +117,8 @@ def _news_lookup() -> dict[str, dict]:
     if not path.exists():
         return {}
     df = pd.read_csv(path, dtype={"code": str})
+    if "news_label" not in df.columns:  # 古い形式のCSV(ローカルの動作確認時など)
+        return {}
     scored = df[df["news_label"].isin(["ポジティブ", "ネガティブ"])]
     return {
         r["code"]: {"label": r["news_label"], "sentiment": r["news_sentiment"]}
@@ -122,8 +126,11 @@ def _news_lookup() -> dict[str, dict]:
     }
 
 
-def build_message(status: dict, explanations: dict[str, CardText]) -> str:
-    """swing_status.json の内容から通知本文を組み立てる(純粋関数、テスト可能)。"""
+def build_message(status: dict, explanations: dict[str, CardText], holdings: list[dict] | None = None) -> str:
+    """swing_status.json の内容から通知本文を組み立てる(純粋関数、テスト可能)。
+
+    holdings は swing_private.json 由来の実保有(公開ファイルには含まれない)。
+    """
     candidates = status.get("candidates", [])
     parts = [f"【スイング買い候補】{status['date']} 大引けデータ"]
 
@@ -157,7 +164,7 @@ def build_message(status: dict, explanations: dict[str, CardText]) -> str:
             if news:
                 parts.append(f"※直近の適時開示に{news['label']}材料あり(スコア{news['sentiment']})")
 
-    holdings = status.get("holdings") or []
+    holdings = holdings or []
     if holdings:
         parts.append("\n【保有(実口座)】")
         for h in holdings:
@@ -218,12 +225,15 @@ def deliver(dry_run: bool = False) -> None:
         print("swing_status.json が無いため配信スキップ")
         return
     status = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+    holdings = []
+    if PRIVATE_PATH.exists():
+        holdings = json.loads(PRIVATE_PATH.read_text(encoding="utf-8")).get("holdings", [])
 
     explanations = {}
     if status.get("candidates"):
         explanations = _build_explanations(_full_candidates(status))
 
-    text = build_message(status, explanations)
+    text = build_message(status, explanations, holdings)
     if dry_run:
         print("----- 配信内容(dry-run) -----")
         print(text)

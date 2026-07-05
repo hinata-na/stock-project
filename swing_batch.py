@@ -31,6 +31,9 @@ from swing_rules import (
 
 CANDIDATES_PATH = Path(__file__).parent / "data" / "candidates.csv"
 STATUS_PATH = Path(__file__).parent / "data" / "swing_status.json"
+# 実保有などの資産情報。data/ は .gitignore 済みで、ワークフローも
+# 特定ファイルのみ add するため、このファイルはコミットされない
+PRIVATE_PATH = Path(__file__).parent / "data" / "swing_private.json"
 
 INDEX_TICKER = "^N225"       # 地合い判定に使う指数
 MARKET_CAP_MIN_OKU = 300     # 候補のユニバース(バックテストと同一)
@@ -241,6 +244,8 @@ def run_nightly(
 
     real_holdings = _check_real_holdings(hists)
 
+    # swing_status.json はパブリックリポジトリにコミットされるため、
+    # 実保有(資産情報)は入れない。保有は swing_private.json 側に書く
     status = {
         "date": str(data_date),
         "run_at": datetime.now().isoformat(timespec="seconds"),
@@ -248,7 +253,6 @@ def run_nightly(
         "budget": budget_label,
         "evaluated": n_updated,
         "candidates": [],
-        "holdings": real_holdings,
         "notes": list(budget_notes),
     }
 
@@ -292,6 +296,10 @@ def run_nightly(
 
     df.reindex(columns=CSV_COLUMNS).to_csv(CANDIDATES_PATH, index=False)
     STATUS_PATH.write_text(json.dumps(status, ensure_ascii=False, indent=1), encoding="utf-8")
+    PRIVATE_PATH.write_text(
+        json.dumps({"holdings": real_holdings}, ensure_ascii=False, indent=1, default=str),
+        encoding="utf-8",
+    )
     print(
         f"スイング候補: {len(status['candidates'])}件"
         + (f"(理由: {status.get('reason')})" if status.get("reason") else "")
