@@ -90,7 +90,10 @@ def add_event(
 def compute_state(events: list[dict]) -> dict:
     """イベント列から現在の余力と保有銘柄を導出する(純粋関数)。
 
-    返り値: {"cash": float, "positions": {code: {"name", "shares", "avg_price"}}}
+    返り値: {"cash": float, "positions": {code: {"name", "shares", "avg_price", "opened_date"}}}
+    opened_date はポジションが0株→保有になった買いイベントの登録日(YYYY-MM-DD)。
+    実際の約定日ではなく登録日ベースの近似(通常は当日夜に登録される想定)で、
+    時間切れ(20営業日)の起点に使う。
     """
     cancelled = {e["ref_id"] for e in events if e["type"] == "取消" and e.get("ref_id")}
     cash = 0.0
@@ -113,7 +116,13 @@ def compute_state(events: list[dict]) -> dict:
             if e["type"] == "買い":
                 cash -= shares * price
                 pos = positions.setdefault(
-                    code, {"name": e.get("name") or code, "shares": 0, "avg_price": 0.0}
+                    code,
+                    {
+                        "name": e.get("name") or code,
+                        "shares": 0,
+                        "avg_price": 0.0,
+                        "opened_date": (e.get("created_at") or "")[:10],
+                    },
                 )
                 total = pos["shares"] + shares
                 if total > 0:

@@ -164,6 +164,63 @@ def _find_today_candidates(
     return picked, notes
 
 
+def _check_real_holdings(hists: dict[str, pd.DataFrame]) -> list[dict]:
+    """台帳の実保有に対する毎晩の出口判定(Phase 10c)。
+
+    実際の建値(平均取得単価)を基準に、利確/損切りライン・時間切れ(登録日から
+    20営業日)・決算接近を判定し、警告付きの保有リストを返す。
+    台帳未設定・保有なし・取得失敗なら空リスト(他の処理に影響させない)。
+    """
+    try:
+        import ledger
+
+        if not ledger.is_configured():
+            return []
+        positions = ledger.current_state()["positions"]
+    except Exception as exc:  # noqa: BLE001
+        print(f"実保有の取得に失敗(スキップ): {exc}", file=sys.stderr)
+        return []
+
+    p = DEFAULT_PARAMS
+    holdings = []
+    for code, pos in positions.items():
+        avg = float(pos["avg_price"])
+        tp = avg * (1 + p.take_profit_pct / 100)
+        sl = avg * (1 - p.stop_loss_pct / 100)
+        h = {
+            "code": code,
+            "name": pos["name"],
+            "shares": pos["shares"],
+            "avg_price": round(avg, 1),
+            "take_profit": round(tp, 1),
+            "stop_loss": round(sl, 1),
+            "alerts": [],
+        }
+        hist = hists.get(code)
+        if hist is not None and len(hist):
+            close = float(hist["Close"].iloc[-1])
+            h["close"] = round(close, 1)
+            h["pnl_pct"] = round((close / avg - 1) * 100, 1)
+            if close >= tp:
+                h["alerts"].append("利確ラインに到達。翌朝の手仕舞いを検討")
+            elif close <= sl:
+                h["alerts"].append("損切りラインに到達。翌朝の手仕舞いを検討")
+            opened = pos.get("opened_date")
+            if opened:
+                days_held = int((hist.index.date > pd.Timestamp(opened).date()).sum())
+                h["days_held"] = days_held
+                remain = p.time_stop_days - days_held
+                if remain <= 0:
+                    h["alerts"].append(f"時間切れ({p.time_stop_days}営業日経過)。翌朝の手仕舞いを検討")
+                elif remain <= 2:
+                    h["alerts"].append(f"時間切れまで残り{remain}営業日")
+        earnings = _fetch_earnings_date(code)
+        if earnings and (earnings - date.today()).days <= EARNINGS_EXCLUDE_DAYS:
+            h["alerts"].append(f"決算発表({earnings})が近い。またぎたくなければ事前に手仕舞いを")
+        holdings.append(h)
+    return holdings
+
+
 def run_nightly(
     hists: dict[str, pd.DataFrame],
     names: dict[str, str],
@@ -182,6 +239,8 @@ def run_nightly(
     params, budget_label, budget_notes = _params_with_budget()
     regime_ok = market_regime_ok(index_hist, params)
 
+    real_holdings = _check_real_holdings(hists)
+
     status = {
         "date": str(data_date),
         "run_at": datetime.now().isoformat(timespec="seconds"),
@@ -189,13 +248,16 @@ def run_nightly(
         "budget": budget_label,
         "evaluated": n_updated,
         "candidates": [],
+        "holdings": real_holdings,
         "notes": list(budget_notes),
     }
 
     if not regime_ok:
         status["reason"] = "地合い悪化(日経平均がMA25未満)のため候補なし"
     else:
+        # シャドーランの追跡中銘柄と、台帳上の実保有銘柄は新規候補から除外
         holding = set(df[df["status"].isin(["約定待ち", "保有中"])]["code"])
+        holding |= {h["code"] for h in real_holdings}
         picked, notes = _find_today_candidates(hists, market_caps, holding, params)
         status["notes"].extend(notes)
         if not picked:
@@ -238,4 +300,5 @@ def run_nightly(
     )
 
     tracked = set(df[df["status"].isin(["約定待ち", "保有中"])]["code"])
-    return sorted(tracked | {c["code"] for c in status["candidates"]})
+    real = {h["code"] for h in real_holdings}
+    return sorted(tracked | real | {c["code"] for c in status["candidates"]})

@@ -1,25 +1,29 @@
-"""個別銘柄を名指しした「買い時・売り時」判断(Phase 6)。
+"""個別銘柄を名指しした「買い時・売り時・様子見」の判断(Phase 6 → Phase 10cで置換)。
 
-screener.csv(ファンダメンタル・テクニカル・ニュース)に加え、
-その場で取得したチャート形状の数値データを合わせて Gemini に判定させる。
+かつては生データをGeminiに渡して判定させていたが、以下の理由でルールエンジン
+(swing_rules、スイング候補と同一の条件)による決定論的な判定に置き換えた:
+- 同じデータでも判定が揺れる/バックテストできない(DESIGN.md「設計思想の核」)
+- Gemini無料枠が20リクエスト/日に縮小され、判定用の呼び出し(1回/質問)が惜しい
+
+台帳(ledger)に保有が登録されている銘柄は「出口」の観点
+(利確/損切りライン・時間切れ)で判定し、未保有の銘柄は「入口」の観点
+(買い候補の条件を満たすか)で判定する。
 """
 
-import os
 import re
 from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
 from curl_cffi import requests as cffi_requests
-from google import genai
-from google.genai import types
 
-from screening import GEMINI_MODEL
+from swing_rules import DEFAULT_PARAMS, SwingParams, check_setup, market_regime_ok
 
 DATA_PATH = Path(__file__).parent / "data" / "screener.csv"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 _CODE_PATTERN = re.compile(r"^[0-9][0-9A-Z]{3}$")
+
+_DISCLAIMER = "※機械的なルールによる判定材料の提示であり、投資助言ではありません。"
 
 
 def _load_universe() -> pd.DataFrame | None:
@@ -46,75 +50,91 @@ def resolve_company(query: str) -> list[dict]:
     return matches.to_dict("records")
 
 
-def compute_chart_shape(code: str) -> dict:
-    """直近の日足からチャート形状を数値化する(単一銘柄のみの都度取得)。"""
+def _fetch_hist(code: str) -> pd.DataFrame | None:
     try:
         session = cffi_requests.Session(impersonate="chrome")
-        hist = yf.Ticker(f"{code}.T", session=session).history(period="2mo", interval="1d")
+        return yf.Ticker(f"{code}.T", session=session).history(period="6mo", interval="1d")
     except Exception:
-        return {}
-
-    if len(hist) < 20:
-        return {}
-
-    close = hist["Close"]
-    recent20 = close.tail(20)
-    current = close.iloc[-1]
-    high20, low20 = recent20.max(), recent20.min()
-    # 20日レンジの中で現在値が何%の位置にあるか(0%=安値、100%=高値)
-    position_pct = 0.0 if high20 == low20 else (current - low20) / (high20 - low20) * 100
-
-    ma25 = close.rolling(25).mean()
-    ma25_slope_pct = (
-        (ma25.iloc[-1] - ma25.iloc[-6]) / ma25.iloc[-6] * 100
-        if len(ma25.dropna()) >= 6
-        else None
-    )
-
-    recent5_diff = close.tail(5).diff().dropna()
-    up_days = int((recent5_diff > 0).sum())
-    down_days = int((recent5_diff < 0).sum())
-
-    return {
-        "position_in_20d_range_pct": round(position_pct, 1),
-        "ma25_slope_5d_pct": round(ma25_slope_pct, 2) if ma25_slope_pct is not None else None,
-        "up_days_last_5": up_days,
-        "down_days_last_5": down_days,
-    }
+        return None
 
 
-def compute_sector_baseline(sector: str) -> dict:
-    """同業種のPER/PBR中央値を返す(既存データのみ、新規取得なし)。"""
-    df = _load_universe()
-    if df is None:
-        return {}
-
-    peers = df[df["sector"] == sector]
-    if peers.empty:
-        return {}
-
-    return {
-        "sector_median_per": round(peers["per"][peers["per"] > 0].median(), 1),
-        "sector_median_pbr": round(peers["pbr"][peers["pbr"] > 0].median(), 1),
-    }
+def _fetch_index_hist() -> pd.DataFrame | None:
+    try:
+        session = cffi_requests.Session(impersonate="chrome")
+        return yf.Ticker("^N225", session=session).history(period="6mo", interval="1d")
+    except Exception:
+        return None
 
 
-_JUDGE_PROMPT = """あなたは投資初心者向けに、個別銘柄の「買い時・売り時・様子見」を判断するアシスタントです。
-以下のデータをもとに、買い時/売り時/様子見のいずれかを判定し、3〜4文程度で理由を説明してください。
+def compose_judgement(
+    name: str,
+    code: str,
+    hist: pd.DataFrame | None,
+    index_hist: pd.DataFrame | None,
+    position: dict | None = None,
+    params: SwingParams = DEFAULT_PARAMS,
+) -> str:
+    """判定文を組み立てる(純粋関数、ネットワーク・Gemini不使用)。"""
+    header = f"■{name}({code})の判断"
+    if hist is None or len(hist) < 2:
+        return f"{header}\n\n株価データを取得できませんでした。時間をおいてもう一度お試しください。"
 
-データの見方:
-- per/pbr と sector_median_per/sector_median_pbr: 業種平均と比べて割安か割高か
-- ma25/ma75/rsi14/signal: テクニカル指標(移動平均・RSI・自動判定シグナル)
-- position_in_20d_range_pct: 直近20日の値幅の中での現在地(0%に近いほど安値圏、100%に近いほど高値圏)
-- ma25_slope_5d_pct: 25日移動平均の直近5日の傾き(プラスなら上向き)
-- up_days_last_5/down_days_last_5: 直近5日の値上がり/値下がり日数
-- news_sentiment/news_label: 直近の適時開示(TDnet)の感情スコアと分類
+    close = float(hist["Close"].iloc[-1])
+    lines = [header, ""]
 
-判断が割れる材料がある場合は無理に断定せず「様子見」としてよい。
-個別銘柄への断定的な売買指示ではなく、あくまで「判断材料の整理」として提示してください。
-最後に一言、投資助言ではない旨を添えてください。
-出力はLINEに表示されるため、マークダウン記法(#や*など)は使わずプレーンテキストで書いてください。
-1行目は「判定: 買い時」「判定: 売り時」「判定: 様子見」のいずれかにしてください。"""
+    if position:
+        # --- 保有中: 出口の観点で判定 ---
+        avg = float(position["avg_price"])
+        tp = avg * (1 + params.take_profit_pct / 100)
+        sl = avg * (1 - params.stop_loss_pct / 100)
+        pnl = (close / avg - 1) * 100
+
+        days_held = None
+        if position.get("opened_date"):
+            days_held = int((hist.index.date > pd.Timestamp(position["opened_date"]).date()).sum())
+
+        if close >= tp:
+            lines.append("判定: 売り時(利確ラインに到達)")
+        elif close <= sl:
+            lines.append("判定: 売り時(損切りラインに到達)")
+        elif days_held is not None and days_held >= params.time_stop_days:
+            lines.append(f"判定: 売り時(時間切れ: {params.time_stop_days}営業日が経過)")
+            lines.append("短期の勢いを取る戦略なので、動かない株を持ち続けるのは資金の無駄です。")
+        else:
+            lines.append("判定: 様子見(保有継続)")
+        lines.append(f"建値 {avg:,.1f}円 → 現在 {close:,.1f}円({pnl:+.1f}%)")
+        lines.append(f"利確ライン {tp:,.1f}円 / 損切りライン {sl:,.1f}円(OCO注文を推奨)")
+        if days_held is not None:
+            lines.append(f"保有 {days_held}営業日(時間切れまで残り {max(params.time_stop_days - days_held, 0)}営業日)")
+    else:
+        # --- 未保有: 入口(スイング買いルール)の観点で判定 ---
+        setup, checks = check_setup(hist, params)
+        regime_ok = market_regime_ok(index_hist, params) if index_hist is not None and len(index_hist) else None
+
+        if setup and regime_ok:
+            lines.append("判定: 買い候補(スイングルールの全条件を満たしています)")
+            lines.append(f"根拠: {setup['breakout_days']}日ぶり高値を出来高{setup['volume_ratio']}倍で更新、"
+                         f"RSI14={setup['rsi14']}、当日{setup['daily_gain_pct']:+.1f}%")
+            lines.append("《注文レシピ》")
+            lines.append(f"・必要資金: 約{setup['unit_cost_yen'] / 10000:,.1f}万円(100株)")
+            lines.append(f"・買い指値 {setup['entry_limit']:,.1f}円(これより高くは買わない)")
+            lines.append(f"・利確 {setup['take_profit']:,.1f}円 / 損切り {setup['stop_loss']:,.1f}円 をOCOで")
+            lines.append(f"・{setup['time_stop_days']}営業日で決着しなければ手仕舞い")
+        elif setup and regime_ok is False:
+            lines.append("判定: 様子見(銘柄の条件は満たすが、地合いがNG)")
+            lines.append("日経平均が25日移動平均を下回っており、全体が下げやすい局面です。"
+                         "雨の日に洗濯物を干さないのと同じで、地合いの回復を待ちます。")
+        else:
+            lines.append("判定: 様子見(買いルールの条件を満たしていません)")
+            failed = [c for c in checks if not c["ok"]]
+            if failed:
+                lines.append("満たしていない条件:")
+                for c in failed:
+                    lines.append(f"・{c['label']}({c['detail']})")
+
+    lines.append("")
+    lines.append(_DISCLAIMER)
+    return "\n".join(lines)
 
 
 def judge_timing(query: str) -> str:
@@ -128,28 +148,25 @@ def judge_timing(query: str) -> str:
         return f"候補が複数見つかりました。銘柄名か証券コードで具体的に指定してください: {names}"
 
     row = candidates[0]
-    payload = {
-        "name": row.get("name"),
-        "code": row.get("code"),
-        "sector": row.get("sector"),
-        "per": row.get("per"),
-        "pbr": row.get("pbr"),
-        "dividend_yield": row.get("dividend_yield"),
-        "roe": row.get("roe"),
-        "ma25": row.get("ma25"),
-        "ma75": row.get("ma75"),
-        "rsi14": row.get("rsi14"),
-        "signal": row.get("signal"),
-        "news_sentiment": row.get("news_sentiment"),
-        "news_label": row.get("news_label"),
-        **compute_sector_baseline(row.get("sector", "")),
-        **compute_chart_shape(row.get("code", "")),
-    }
+    code = str(row["code"])
+    hist = _fetch_hist(code)
+    index_hist = _fetch_index_hist()
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=str(payload),
-        config=types.GenerateContentConfig(system_instruction=_JUDGE_PROMPT),
-    )
-    return f"■{row.get('name')}({row.get('code')})の判断\n\n{response.text.strip()}"
+    position = None
+    try:
+        import ledger
+
+        if ledger.is_configured():
+            position = ledger.current_state()["positions"].get(code)
+    except Exception:
+        position = None  # 台帳が読めなくても判定自体は続行する
+
+    # 予算(台帳の余力 or 固定値)は夜間バッチの候補選定と同じロジックを使う
+    try:
+        from swing_batch import _params_with_budget
+
+        params = _params_with_budget()[0]
+    except Exception:
+        params = DEFAULT_PARAMS
+
+    return compose_judgement(row["name"], code, hist, index_hist, position, params)

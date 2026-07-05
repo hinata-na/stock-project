@@ -61,14 +61,15 @@ def market_regime_ok(index_hist, params: SwingParams = DEFAULT_PARAMS) -> bool:
     return bool(close.iloc[-1] >= ma.iloc[-1])
 
 
-def find_setup(hist, params: SwingParams = DEFAULT_PARAMS) -> dict | None:
-    """日足の最終日を評価し、買い候補の条件を満たせばセットアップ情報を返す。
+def check_setup(hist, params: SwingParams = DEFAULT_PARAMS) -> tuple[dict | None, list[dict]]:
+    """日足の最終日を全条件で評価し、(セットアップ, 条件ごとの判定内訳) を返す。
 
-    返り値の dict は「注文レシピ」の数値と、説明文生成に使う根拠数値を含む。
-    条件を満たさなければ None。
+    セットアップは全条件を満たした場合のみ(満たさなければ None)。
+    判定内訳は {"label", "ok", "detail"} のリストで、個別銘柄の「なぜ買い時でないか」の
+    説明(stock_lookup)に使う。候補選定と説明が同じ判定コードを共有するための構造。
     """
     if hist is None or len(hist) < max(MIN_HISTORY_ROWS, params.breakout_days + 1):
-        return None
+        return None, [{"label": "データ", "ok": False, "detail": "日足の履歴が不足(新規上場など)"}]
 
     close = hist["Close"]
     volume = hist["Volume"]
@@ -76,46 +77,85 @@ def find_setup(hist, params: SwingParams = DEFAULT_PARAMS) -> dict | None:
     prev_close = float(close.iloc[-2])
 
     if today_close <= 0 or prev_close <= 0:
-        return None
+        return None, [{"label": "データ", "ok": False, "detail": "価格データが不正"}]
+
+    checks = []
 
     # 1) ブレイクアウト: 直近 breakout_days 日(当日除く)の終値高値を更新
     prior_high = float(close.iloc[-(params.breakout_days + 1):-1].max())
-    if today_close <= prior_high:
-        return None
+    checks.append(
+        {
+            "label": f"{params.breakout_days}日高値ブレイク",
+            "ok": today_close > prior_high,
+            "detail": f"終値{today_close:,.1f}円 / 直近高値{prior_high:,.1f}円",
+        }
+    )
 
     # 2) 出来高急増: 当日出来高が20日平均(当日除く)の volume_ratio_min 倍以上
     vol_avg20 = float(volume.iloc[-21:-1].mean())
-    if vol_avg20 <= 0:
-        return None
-    volume_ratio = float(volume.iloc[-1]) / vol_avg20
-    if volume_ratio < params.volume_ratio_min:
-        return None
+    volume_ratio = float(volume.iloc[-1]) / vol_avg20 if vol_avg20 > 0 else 0.0
+    checks.append(
+        {
+            "label": f"出来高{params.volume_ratio_min:.0f}倍以上",
+            "ok": vol_avg20 > 0 and volume_ratio >= params.volume_ratio_min,
+            "detail": f"20日平均比{volume_ratio:.1f}倍",
+        }
+    )
 
     # 3) トレンド: 終値がMA25より上
     ma = float(close.rolling(params.ma_days).mean().iloc[-1])
-    if today_close < ma:
-        return None
+    checks.append(
+        {
+            "label": f"MA{params.ma_days}より上",
+            "ok": today_close >= ma,
+            "detail": f"MA{params.ma_days}={ma:,.1f}円",
+        }
+    )
 
     # 4) 過熱の除外: RSI が上限未満、当日上昇率がストップ高級でない
     rsi = _rsi_last(close)
-    if rsi is None or rsi >= params.rsi_max:
-        return None
+    checks.append(
+        {
+            "label": f"RSI{params.rsi_max:.0f}未満",
+            "ok": rsi is not None and rsi < params.rsi_max,
+            "detail": f"RSI14={rsi:.1f}" if rsi is not None else "RSI計算不可",
+        }
+    )
     daily_gain_pct = (today_close / prev_close - 1) * 100
-    if daily_gain_pct >= params.daily_gain_max_pct:
-        return None
+    checks.append(
+        {
+            "label": "急騰直後でない",
+            "ok": daily_gain_pct < params.daily_gain_max_pct,
+            "detail": f"当日{daily_gain_pct:+.1f}%",
+        }
+    )
 
     # 5) 流動性: 20日平均売買代金
     turnover = float((close * volume).iloc[-20:].mean())
-    if turnover < params.turnover_min_yen:
-        return None
+    checks.append(
+        {
+            "label": "売買代金1億円以上",
+            "ok": turnover >= params.turnover_min_yen,
+            "detail": f"20日平均{turnover / 1e8:.1f}億円",
+        }
+    )
 
     # 6) 予算: 単元(100株)の必要資金がユーザー予算を超える銘柄は除外。
     #    シャドーランの実績を「実際に買える銘柄」だけで積むための制約でもある
-    if params.budget_yen is not None and today_close * 100 > params.budget_yen:
-        return None
+    if params.budget_yen is not None:
+        checks.append(
+            {
+                "label": "予算内",
+                "ok": today_close * 100 <= params.budget_yen,
+                "detail": f"100株={today_close * 100 / 10000:,.1f}万円 / 予算{params.budget_yen / 10000:,.1f}万円",
+            }
+        )
+
+    if not all(c["ok"] for c in checks):
+        return None, checks
 
     entry = today_close
-    return {
+    setup = {
         # --- 注文レシピ ---
         "entry_limit": round(entry, 1),          # 翌日の指値(当日終値)
         "take_profit": round(entry * (1 + params.take_profit_pct / 100), 1),
@@ -130,6 +170,12 @@ def find_setup(hist, params: SwingParams = DEFAULT_PARAMS) -> dict | None:
         "daily_gain_pct": round(daily_gain_pct, 1),
         "turnover_oku_yen": round(turnover / 1e8, 1),
     }
+    return setup, checks
+
+
+def find_setup(hist, params: SwingParams = DEFAULT_PARAMS) -> dict | None:
+    """日足の最終日を評価し、買い候補の条件を満たせばセットアップ情報を返す。"""
+    return check_setup(hist, params)[0]
 
 
 def rank_candidates(setups: list[dict], max_count: int = 3) -> list[dict]:

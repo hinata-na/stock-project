@@ -157,12 +157,26 @@ def build_message(status: dict, explanations: dict[str, CardText]) -> str:
             if news:
                 parts.append(f"※直近の適時開示に{news['label']}材料あり(スコア{news['sentiment']})")
 
+    holdings = status.get("holdings") or []
+    if holdings:
+        parts.append("\n【保有(実口座)】")
+        for h in holdings:
+            line = f"・{h['name']}({h['code']}) {h['shares']}株 @ {_yen(h['avg_price'])}"
+            if h.get("close") is not None:
+                line += f" → 現在{_yen(h['close'])}({h['pnl_pct']:+.1f}%)"
+            parts.append(line)
+            parts.append(f"  利確 {_yen(h['take_profit'])} / 損切り {_yen(h['stop_loss'])}"
+                         + (f" / 保有{h['days_held']}営業日" if h.get("days_held") is not None else ""))
+            for alert in h.get("alerts", []):
+                parts.append(f"  ※{alert}")
+
     tracking = _tracking_lines()
-    # 当日の新規候補は「約定待ち」として追跡にも載るため、重複表示を避ける
-    new_codes = {c["code"] for c in candidates}
-    tracking = [t for t in tracking if not any(f"({code})" in t for code in new_codes)]
+    # 当日の新規候補は「約定待ち」として追跡にも載るため、重複表示を避ける。
+    # 実口座で保有している銘柄もシャドー追跡との二重表示を避ける
+    skip_codes = {c["code"] for c in candidates} | {h["code"] for h in holdings}
+    tracking = [t for t in tracking if not any(f"({code})" in t for code in skip_codes)]
     if tracking:
-        parts.append("\n【追跡中】")
+        parts.append("\n【追跡中(シャドー)】")
         parts.extend(tracking)
 
     parts.append("")
