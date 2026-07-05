@@ -1,33 +1,27 @@
 {
  "date": "2026-07-03",
- "run_at": "2026-07-05T14:31:02",
+ "run_at": "2026-07-05T12:27:37",
  "regime_ok": true,
+ "budget": "固定30万円",
  "evaluated": 0,
  "candidates": [
   {
-   "code": "8818",
-   "name": "京阪神ビルディング",
-   "entry_limit": 1129.0,
-   "take_profit": 1208.0,
-   "stop_loss": 1050.0,
-   "volume_ratio": 3.5
+   "code": "4419",
+   "name": "Ｆｉｎａｔｅｘｔホールディングス",
+   "entry_limit": 1516.0,
+   "take_profit": 1622.1,
+   "stop_loss": 1409.9,
+   "volume_ratio": 2.2
   },
   {
-   "code": "7283",
-   "name": "愛三工業",
-   "entry_limit": 2147.0,
-   "take_profit": 2297.3,
-   "stop_loss": 1996.7,
-   "volume_ratio": 2.8
-  },
-  {
-   "code": "4071",
-   "name": "プラスアルファ・コンサルティング",
-   "entry_limit": 2906.0,
-   "take_profit": 3109.4,
-   "stop_loss": 2702.6,
-   "volume_ratio": 2.6
+   "code": "7366",
+   "name": "ＬＩＴＡＬＩＣＯ",
+   "entry_limit": 1668.0,
+   "take_profit": 1784.8,
+   "stop_loss": 1551.2,
+   "volume_ratio": 2.2
   }
  ],
+ "holdings": [],
  "notes": []
 }
