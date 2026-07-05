@@ -1,6 +1,9 @@
 import os
 
 from dotenv import load_dotenv
+
+load_dotenv()  # screening.py 等が import 時に環境変数を読むため、import より前に呼ぶ
+
 from fastapi import FastAPI, HTTPException, Request
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -15,8 +18,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 from screener import run_screening
 from screening import format_conditions, generate_commentary, parse_screening_conditions
-
-load_dotenv()
+from stock_lookup import judge_timing
 
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -59,6 +61,12 @@ def generate_reply(user_text: str) -> str:
         conditions = parse_screening_conditions(user_text)
     except Exception:
         return "条件の解析に失敗しました。時間をおいてもう一度お試しください。"
+
+    if conditions.company_name:
+        try:
+            return judge_timing(conditions.company_name)
+        except Exception:
+            return "判断の生成に失敗しました。時間をおいてもう一度お試しください。"
 
     summary = format_conditions(conditions)
     if not summary:

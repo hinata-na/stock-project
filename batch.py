@@ -9,11 +9,16 @@ import sys
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()  # news.py 等が import 時に環境変数を読むため、import より前に呼ぶ
+
 import pandas as pd
 import yfinance as yf
 from curl_cffi import requests as cffi_requests
 
 from indicators import compute_technicals
+from news import build_news_features
 
 # JPX が毎月更新している東証上場銘柄一覧(Excel)
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
@@ -37,8 +42,11 @@ def fetch_universe() -> pd.DataFrame:
     )
 
 
-def fetch_metrics(code: str) -> dict | None:
+def fetch_metrics(code: str) -> tuple[dict, pd.DataFrame | None] | None:
     """yfinance から 1 銘柄分の指標(ファンダメンタル + テクニカル)を取得する。
+
+    (指標dict, 6ヶ月分の日足) を返す。日足はスイング候補判定(swing_batch)でも
+    使うため、ここで一度だけ取得して使い回す。
 
     yfinance の既定セッションは全スレッドで共有されており、並列アクセス時に
     Yahoo 側の認証(crumb)が壊れて 401 が連鎖することがあるため、
@@ -64,7 +72,11 @@ def fetch_metrics(code: str) -> dict | None:
     market_cap = info.get("marketCap")
 
     try:
-        technicals = compute_technicals(ticker)
+        hist = ticker.history(period="6mo", interval="1d")
+    except Exception:
+        hist = None
+    try:
+        technicals = compute_technicals(hist)
     except Exception:
         technicals = {"ma25": None, "ma75": None, "rsi14": None, "signal": None}
 
@@ -77,11 +89,11 @@ def fetch_metrics(code: str) -> dict | None:
         "roe": round(roe * 100, 2) if roe is not None else None,
         "market_cap_oku_yen": round(market_cap / 1e8, 1) if market_cap else None,
         **technicals,
-    }
+    }, hist
 
 
-def fetch_all(codes: list[str], delay: float) -> tuple[list[dict], list[str]]:
-    """順番に指標を取得し、(成功データ, 失敗銘柄コード) を返す。
+def fetch_all(codes: list[str], delay: float) -> tuple[list[dict], dict[str, pd.DataFrame], list[str]]:
+    """順番に指標を取得し、(成功データ, 銘柄別日足, 失敗銘柄コード) を返す。
 
     並列実行するとリクエストが短時間に集中し、Yahoo 側のレート制限に
     引っかかって以後のリクエストが全滅する(プロセス内では回復しない)
@@ -89,17 +101,21 @@ def fetch_all(codes: list[str], delay: float) -> tuple[list[dict], list[str]]:
     """
     start = time.time()
     rows: list[dict] = []
+    hists: dict[str, pd.DataFrame] = {}
     failed: list[str] = []
     for i, code in enumerate(codes, 1):
         result = fetch_metrics(code)
         if result:
-            rows.append(result)
+            metrics, hist = result
+            rows.append(metrics)
+            if hist is not None and len(hist):
+                hists[code] = hist
         else:
             failed.append(code)
         if i % 100 == 0:
             print(f"{i}/{len(codes)} 件処理 ({time.time() - start:.0f}秒)", flush=True)
         time.sleep(delay)
-    return rows, failed
+    return rows, hists, failed
 
 
 def main() -> None:
@@ -115,7 +131,7 @@ def main() -> None:
     print(f"対象: {len(universe)} 銘柄", flush=True)
 
     start = time.time()
-    rows, failed = fetch_all(list(universe["code"]), args.delay)
+    rows, hists, failed = fetch_all(list(universe["code"]), args.delay)
 
     # 稀に発生する一時的な失敗分だけを、待機時間を延ばして拾い直す
     for attempt in range(1, args.retries + 1):
@@ -124,8 +140,9 @@ def main() -> None:
         wait = 120 * attempt
         print(f"リトライ {attempt}: 残り {len(failed)} 銘柄({wait}秒待機後)", flush=True)
         time.sleep(wait)
-        recovered, failed = fetch_all(failed, delay=args.delay * 2)
+        recovered, recovered_hists, failed = fetch_all(failed, delay=args.delay * 2)
         rows.extend(recovered)
+        hists.update(recovered_hists)
 
     if failed:
         print(f"取得できなかった銘柄: {len(failed)} 件", flush=True)
@@ -143,9 +160,82 @@ def main() -> None:
         print(f"取得成功が {len(merged)}/{len(universe)} 件のみのため中断", file=sys.stderr)
         sys.exit(1)
 
+    merged, disclosures = attach_news(merged)
+
+    # スイング候補の抽出とシャドーランの答え合わせ(Phase 8)。
+    # 失敗しても中核のスクリーニングデータは壊さない
+    swing_codes: list[str] = []
+    try:
+        from swing_batch import run_nightly
+
+        swing_codes = run_nightly(hists, dict(zip(merged["code"], merged["name"])), dict(zip(merged["code"], merged["market_cap_oku_yen"])))
+    except Exception as exc:  # noqa: BLE001
+        print(f"スイング候補の処理に失敗(スキップ): {exc}", file=sys.stderr)
+
+    # 感情採点はスイング候補・追跡中銘柄だけに絞る(Gemini無料枠20回/日対策で最大1回)
+    try:
+        merged = attach_candidate_sentiment(merged, set(swing_codes), disclosures)
+    except Exception as exc:  # noqa: BLE001
+        print(f"候補銘柄の感情採点に失敗(スキップ): {exc}", file=sys.stderr)
+
     DATA_PATH.parent.mkdir(exist_ok=True)
     merged.to_csv(DATA_PATH, index=False)
     print(f"保存完了: {DATA_PATH} ({len(merged)} 銘柄, {time.time() - start:.0f}秒)")
+
+    # 候補カードのLINEプッシュ配信(Phase 9)。データ生成とは独立に失敗させる
+    try:
+        from swing_push import deliver
+
+        deliver()
+    except Exception as exc:  # noqa: BLE001
+        print(f"LINE配信に失敗(スキップ): {exc}", file=sys.stderr)
+
+
+def attach_news(merged: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """TDnet 適時開示の件数・日付を news_* 列として合流させる(Gemini不使用)。
+
+    感情スコア列(news_sentiment/news_label)はここでは空のまま作り、
+    後段の attach_candidate_sentiment がスイング候補銘柄だけを埋める。
+    ニュースは補助的な特徴量なので、取得に失敗しても
+    中核のスクリーニングデータは壊さず、列だけ空にして続行する。
+    """
+    news_cols = ["news_count", "news_sentiment", "news_label", "news_latest"]
+    disclosures: dict = {}
+    try:
+        features, disclosures = build_news_features(codes=set(merged["code"]))
+    except Exception as exc:  # noqa: BLE001
+        print(f"ニュース特徴量の取得に失敗(スキップ): {exc}", file=sys.stderr)
+        features = {}
+
+    news_df = pd.DataFrame.from_dict(features, orient="index").rename_axis("code").reset_index()
+    for col in news_cols:
+        if col not in news_df.columns:
+            news_df[col] = pd.NA
+
+    # 既に news_* 列がある場合(再実行時など)、マージで列名が重複しないよう先に落とす
+    merged = merged.drop(columns=[c for c in news_cols if c in merged.columns])
+    merged = merged.merge(news_df[["code", *news_cols]], on="code", how="left")
+    merged["news_count"] = merged["news_count"].fillna(0).astype(int)
+    print(f"開示あり: {len(features)} 銘柄", flush=True)
+    return merged, disclosures
+
+
+def attach_candidate_sentiment(
+    merged: pd.DataFrame, codes: set[str], disclosures: dict
+) -> pd.DataFrame:
+    """スイング候補・追跡中銘柄の開示だけを感情採点して列を埋める(Gemini最大1回)。"""
+    from news import score_sentiments
+
+    target = {c: v for c, v in disclosures.items() if c in codes}
+    if not target:
+        return merged
+    scores = score_sentiments(target)
+    for code, s in scores.items():
+        mask = merged["code"] == code
+        merged.loc[mask, "news_sentiment"] = s["sentiment"]
+        merged.loc[mask, "news_label"] = s["label"]
+    print(f"感情採点(候補銘柄のみ): {len(scores)} 銘柄", flush=True)
+    return merged
 
 
 if __name__ == "__main__":

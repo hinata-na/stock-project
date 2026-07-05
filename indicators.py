@@ -1,7 +1,6 @@
 """移動平均・RSIから売買シグナルを判定する。"""
 
 import pandas as pd
-import yfinance as yf
 
 MA_SHORT = 25
 MA_LONG = 75
@@ -20,13 +19,13 @@ def _rsi(close: pd.Series, period: int) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
-def compute_technicals(ticker: yf.Ticker) -> dict:
+def compute_technicals(hist: pd.DataFrame) -> dict:
     """MA25/MA75/RSI14 と、直近1日で発生したシグナルを返す。
 
+    hist は6ヶ月分の日足(yfinance history() 形式)。
     半年分の日足が無い(新規上場など)場合は全項目 None。
     """
-    hist = ticker.history(period="6mo", interval="1d")
-    if len(hist) < MA_LONG + 1:
+    if hist is None or len(hist) < MA_LONG + 1:
         return {"ma25": None, "ma75": None, "rsi14": None, "signal": None}
 
     close = hist["Close"]
