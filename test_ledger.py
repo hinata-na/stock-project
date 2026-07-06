@@ -85,22 +85,6 @@ def test_opened_date_tracks_position_opening():
     assert state["positions"]["7203"]["opened_date"] == "2026-07-02"
 
 
-def test_fill_shares_and_price_from_text():
-    from ledger import _fill_from_text
-    from screening import ScreeningConditions
-
-    c = ScreeningConditions(ledger_event="買い", company_name="7203")
-    c = _fill_from_text(c, "7203を1,880円で100株買った")
-    assert c.ledger_shares == 100
-    assert c.ledger_price == 1880
-
-    # Gemini が抽出済みの値は上書きしない
-    c2 = ScreeningConditions(ledger_event="売り", ledger_price=1950.0)
-    c2 = _fill_from_text(c2, "トヨタを1900円で200株売った")
-    assert c2.ledger_price == 1950.0
-    assert c2.ledger_shares == 200
-
-
 if __name__ == "__main__":
     import sys
 

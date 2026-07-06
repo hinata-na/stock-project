@@ -2,7 +2,7 @@ import os
 
 from dotenv import load_dotenv
 
-load_dotenv()  # screening.py 等が import 時に環境変数を読むため、import より前に呼ぶ
+load_dotenv()  # ledger.py 等が import 時に環境変数を読むため、import より前に呼ぶ
 
 from fastapi import FastAPI, HTTPException, Request
 from linebot.v3 import WebhookHandler
@@ -16,9 +16,8 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
+from commands import HELP_TEXT, parse_command
 from ledger import handle_ledger_event
-from screener import run_screening
-from screening import format_conditions, generate_commentary, parse_screening_conditions
 from stock_lookup import judge_timing
 
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
@@ -55,46 +54,25 @@ async def callback(request: Request):
 def generate_reply(user_text: str, user_id: str) -> str:
     """ユーザーの発言から返信文を作る。
 
-    Gemini で自然言語をスクリーニング条件に変換し、
-    夜間バッチで生成済みの銘柄データをフィルタして結果を返す。
+    定型コマンド(commands.parse_command、Gemini不使用)だけを受け付け、
+    解釈できない入力にはヘルプを返す。
     台帳・個別銘柄判断は発言者(user_id)ごとに分離される。
     """
-    try:
-        conditions = parse_screening_conditions(user_text)
-    except Exception:
-        return "条件の解析に失敗しました。時間をおいてもう一度お試しください。"
+    cmd = parse_command(user_text)
 
-    if conditions.ledger_event:
-        try:
-            return handle_ledger_event(conditions, user_id, user_text)
-        except Exception:
-            return "台帳の処理に失敗しました。時間をおいてもう一度お試しください。"
+    if cmd.kind == "不明":
+        return HELP_TEXT
 
-    if conditions.company_name:
+    if cmd.kind == "銘柄判断":
         try:
-            return judge_timing(conditions.company_name, user_id)
+            return judge_timing(cmd.company, user_id)
         except Exception:
             return "判断の生成に失敗しました。時間をおいてもう一度お試しください。"
 
-    summary = format_conditions(conditions)
-    if not summary:
-        return (
-            "条件を認識できませんでした。\n"
-            "例:「PER15倍以下で配当利回り3%以上の自動車株」"
-        )
-
-    result_text, rows = run_screening(conditions)
-    reply = f"■認識した条件\n{summary}\n\n■結果\n{result_text}"
-
-    if rows:
-        try:
-            commentary = generate_commentary(rows)
-        except Exception:
-            commentary = ""
-        if commentary:
-            reply += f"\n\n■AIによる解説\n{commentary}"
-
-    return reply
+    try:
+        return handle_ledger_event(cmd, user_id)
+    except Exception:
+        return "台帳の処理に失敗しました。時間をおいてもう一度お試しください。"
 
 
 @handler.add(MessageEvent, message=TextMessageContent)

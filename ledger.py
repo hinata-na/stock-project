@@ -33,7 +33,6 @@
 """
 
 import os
-import re
 
 from curl_cffi import requests as cffi_requests
 
@@ -169,41 +168,18 @@ def format_state(state: dict) -> str:
     return "\n".join(lines)
 
 
-# 「100株」「1,880円」のような表記は完全に規則的なので、Gemini の抽出漏れは
-# 正規表現で補完する(flash-lite が ledger_shares を出力しない事象を観測したため)
-_SHARES_PATTERN = re.compile(r"([0-9][0-9,]*)\s*株")
-_PRICE_PATTERN = re.compile(r"([0-9][0-9,.]*)\s*円")
+def handle_ledger_event(cmd, user_id: str) -> str:
+    """定型コマンド(commands.Command)の台帳イベントを処理し、返信文を返す。
 
-
-def _fill_from_text(conditions, user_text: str):
-    """Gemini が取り漏らした株数・単価を発言テキストから補完する。"""
-    if conditions.ledger_shares is None:
-        m = _SHARES_PATTERN.search(user_text)
-        if m:
-            conditions.ledger_shares = float(m.group(1).replace(",", ""))
-    if conditions.ledger_price is None:
-        m = _PRICE_PATTERN.search(user_text)
-        if m:
-            conditions.ledger_price = float(m.group(1).replace(",", ""))
-    return conditions
-
-
-def handle_ledger_event(conditions, user_id: str, user_text: str = "") -> str:
-    """LINEで解析済みの台帳イベントを処理し、返信文を返す。
-
-    conditions は screening.ScreeningConditions(ledger_* フィールド付き)。
     user_id は発言者(LINEのuser_id)。台帳の読み書きは本人の行だけに閉じる。
-    user_text は補完用の元発言(株数・単価の正規表現フォールバック)。
     """
-    if conditions.ledger_event in ("買い", "売り") and user_text:
-        conditions = _fill_from_text(conditions, user_text)
     if not is_configured():
         return (
             "台帳(Supabase)が未設定のため、この機能はまだ使えません。\n"
             "READMEの「取引台帳のセットアップ」を参照してください。"
         )
 
-    ev = conditions.ledger_event
+    ev = cmd.kind
 
     if ev == "余力照会":
         return format_state(current_state(user_id))
@@ -224,49 +200,48 @@ def handle_ledger_event(conditions, user_id: str, user_text: str = "") -> str:
         return f"直前のイベントを取り消しました: {detail}\n\n{format_state(current_state(user_id))}"
 
     if ev in ("入金", "出金"):
-        if not conditions.ledger_amount:
+        if not cmd.amount:
             return f"{ev}額が読み取れませんでした。「50万円{ev}した」のように金額を含めてください。"
-        add_event(ev, user_id, amount=conditions.ledger_amount)
-        return f"{ev} {conditions.ledger_amount / 10000:,.1f}万円 を記録しました。\n\n{format_state(current_state(user_id))}"
+        add_event(ev, user_id, amount=cmd.amount)
+        return f"{ev} {cmd.amount / 10000:,.1f}万円 を記録しました。\n\n{format_state(current_state(user_id))}"
 
     if ev == "調整":
-        if conditions.ledger_amount is None:
+        if cmd.amount is None:
             return "修正後の余力額が読み取れませんでした。「余力を52万円に修正」のように指定してください。"
         current = current_state(user_id)
-        diff = conditions.ledger_amount - current["cash"]
+        diff = cmd.amount - current["cash"]
         add_event("調整", user_id, amount=diff)
         return (
-            f"余力を {conditions.ledger_amount / 10000:,.1f}万円 に修正しました"
+            f"余力を {cmd.amount / 10000:,.1f}万円 に修正しました"
             f"(調整額 {diff / 10000:+,.1f}万円)。\n\n{format_state(current_state(user_id))}"
         )
 
     if ev in ("買い", "売り"):
         from stock_lookup import resolve_company
 
-        if not conditions.company_name:
+        if not cmd.company:
             return f"銘柄が読み取れませんでした。「7203を1880円で100株{ev[0]}った」のように銘柄・単価・株数を含めてください。"
-        if not conditions.ledger_shares or not conditions.ledger_price:
+        if not cmd.shares or not cmd.price:
             return f"株数または単価が読み取れませんでした。「1880円で100株」のように両方を含めてください。"
-        matches = resolve_company(conditions.company_name)
+        matches = resolve_company(cmd.company)
         if not matches:
-            return f"「{conditions.company_name}」に該当する銘柄が見つかりませんでした。"
+            return f"「{cmd.company}」に該当する銘柄が見つかりませんでした。"
         if len(matches) > 1:
             names = "、".join(f"{m['name']}({m['code']})" for m in matches[:5])
             return f"候補が複数あります。銘柄コードで指定してください: {names}"
         stock = matches[0]
-        shares = int(conditions.ledger_shares)
         add_event(
             ev,
             user_id,
             code=stock["code"],
             name=stock["name"],
-            shares=shares,
-            price=conditions.ledger_price,
+            shares=cmd.shares,
+            price=cmd.price,
         )
-        total = shares * conditions.ledger_price
+        total = cmd.shares * cmd.price
         return (
             f"{ev}: {stock['name']}({stock['code']}) "
-            f"{shares}株 @ {conditions.ledger_price:,.1f}円"
+            f"{cmd.shares}株 @ {cmd.price:,.1f}円"
             f"(約{total / 10000:,.1f}万円)を記録しました。\n\n{format_state(current_state(user_id))}"
         )
 
