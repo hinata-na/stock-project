@@ -14,9 +14,11 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
-from screening import GEMINI_MODEL
-
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+# プロジェクトで唯一のGemini利用箇所(夜間バッチの感情採点、最大1回/日)。
+# 2.5-flash は無料枠が20リクエスト/日と少ないため、日次上限の大きい flash-lite を使う
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 # JPX/東証の TDnet 適時開示を JSON で返す無料ラッパー(yanoshin WebAPI)
 TDNET_URL = "https://webapi.yanoshin.jp/webapi/tdnet/list/{start}-{end}.json"

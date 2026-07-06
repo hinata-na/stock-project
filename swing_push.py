@@ -1,8 +1,10 @@
 """スイング候補カードのLINEプッシュ配信(Phase 9)。設計は DESIGN.md 参照。
 
 夜間バッチ(batch.py)の最後に呼ばれ、swing_batch が生成した
-data/swing_status.json と data/candidates.csv から通知文を組み立てて、
-ALLOWED_USER_IDS の全員にプッシュする。
+data/swing_status.json と data/candidates.csv、ユーザー別の
+data/swing_private.json(予算・保有・配信候補)から、
+ユーザーごとに本文を組み立てて個別にプッシュする
+(保有・余力は本人にしか送らない)。
 
 - 判定・数値はルールエンジン(swing_rules)が出したものをそのまま表示する。
   「やさしい説明」「専門用語での説明」は根拠数値を埋め込んだテンプレートで生成する
@@ -22,6 +24,8 @@ from pydantic import BaseModel
 
 STATUS_PATH = Path(__file__).parent / "data" / "swing_status.json"
 CANDIDATES_PATH = Path(__file__).parent / "data" / "candidates.csv"
+# 実保有(資産情報)はコミット対象外の swing_private.json から読む(swing_batch が生成)
+PRIVATE_PATH = Path(__file__).parent / "data" / "swing_private.json"
 
 # シャドーランの決済がこの件数に達するまでは、参考値としてバックテストの数字を出す
 MIN_SHADOW_TRADES = 20
@@ -115,6 +119,8 @@ def _news_lookup() -> dict[str, dict]:
     if not path.exists():
         return {}
     df = pd.read_csv(path, dtype={"code": str})
+    if "news_label" not in df.columns:  # 古い形式のCSV(ローカルの動作確認時など)
+        return {}
     scored = df[df["news_label"].isin(["ポジティブ", "ネガティブ"])]
     return {
         r["code"]: {"label": r["news_label"], "sentiment": r["news_sentiment"]}
@@ -122,13 +128,23 @@ def _news_lookup() -> dict[str, dict]:
     }
 
 
-def build_message(status: dict, explanations: dict[str, CardText]) -> str:
-    """swing_status.json の内容から通知本文を組み立てる(純粋関数、テスト可能)。"""
+def build_message(status: dict, explanations: dict[str, CardText], user_data: dict | None = None) -> str:
+    """swing_status.json の内容から通知本文を組み立てる(純粋関数、テスト可能)。
+
+    user_data は swing_private.json 由来のユーザー別データ
+    {"budget", "notes", "holdings", "candidates"(このユーザーに配信するコード)}。
+    None なら全候補・保有なしの共通本文(ローカル確認用)。
+    """
     candidates = status.get("candidates", [])
+    if user_data is not None:
+        codes = set(user_data.get("candidates", []))
+        candidates = [c for c in candidates if c["code"] in codes]
     parts = [f"【スイング買い候補】{status['date']} 大引けデータ"]
 
     if not candidates:
-        parts.append(f"\n本日は候補なし。\n理由: {status.get('reason', '不明')}")
+        # 全体では候補があっても、本人の予算・保有で絞ると0件になる場合がある
+        reason = status.get("reason") or "予算・保有条件に合う候補なし"
+        parts.append(f"\n本日は候補なし。\n理由: {reason}")
         parts.append("(スクリーニング自体は正常に実行されています)")
     else:
         df = pd.read_csv(CANDIDATES_PATH, dtype=str) if CANDIDATES_PATH.exists() else None
@@ -157,7 +173,7 @@ def build_message(status: dict, explanations: dict[str, CardText]) -> str:
             if news:
                 parts.append(f"※直近の適時開示に{news['label']}材料あり(スコア{news['sentiment']})")
 
-    holdings = status.get("holdings") or []
+    holdings = (user_data or {}).get("holdings") or []
     if holdings:
         parts.append("\n【保有(実口座)】")
         for h in holdings:
@@ -181,14 +197,16 @@ def build_message(status: dict, explanations: dict[str, CardText]) -> str:
 
     parts.append("")
     parts.append(f"地合い: {'OK(日経平均はMA25上)' if status.get('regime_ok') else 'NG(日経平均がMA25未満)'}")
-    if status.get("budget"):
-        parts.append(f"予算: {status['budget']}")
+    if user_data and user_data.get("budget"):
+        parts.append(f"予算: {user_data['budget']}")
+    for note in (user_data or {}).get("notes", []):
+        parts.append(f"※{note}")
     parts.append(_shadow_stats())
     return "\n".join(parts)
 
 
-def _push_line(text: str) -> bool:
-    """ALLOWED_USER_IDS 全員にプッシュ。設定が無ければ False(スキップ)。"""
+def _push_texts(texts: dict[str, str]) -> bool:
+    """{user_id: 本文} をそれぞれ本人にだけプッシュ。設定が無ければ False(スキップ)。"""
     from linebot.v3.messaging import (
         ApiClient,
         Configuration,
@@ -198,37 +216,46 @@ def _push_line(text: str) -> bool:
     )
 
     token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-    user_ids = [u.strip() for u in os.environ.get("ALLOWED_USER_IDS", "").split(",") if u.strip()]
-    if not token or not user_ids:
+    if not token or not texts:
         print("LINE設定(LINE_CHANNEL_ACCESS_TOKEN / ALLOWED_USER_IDS)が無いため配信スキップ")
         return False
 
     configuration = Configuration(access_token=token)
     with ApiClient(configuration) as api_client:
         api = MessagingApi(api_client)
-        for uid in user_ids:
+        for uid, text in texts.items():
             api.push_message(PushMessageRequest(to=uid, messages=[TextMessage(text=text)]))
-    print(f"LINE配信完了: {len(user_ids)}人")
+    print(f"LINE配信完了: {len(texts)}人")
     return True
 
 
 def deliver(dry_run: bool = False) -> None:
-    """batch.py から呼ばれるエントリポイント。"""
+    """batch.py から呼ばれるエントリポイント。ユーザーごとに本文を作って個別配信する。"""
     if not STATUS_PATH.exists():
         print("swing_status.json が無いため配信スキップ")
         return
     status = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+    users: dict[str, dict] = {}
+    if PRIVATE_PATH.exists():
+        users = json.loads(PRIVATE_PATH.read_text(encoding="utf-8")).get("users", {})
 
     explanations = {}
     if status.get("candidates"):
         explanations = _build_explanations(_full_candidates(status))
 
-    text = build_message(status, explanations)
     if dry_run:
-        print("----- 配信内容(dry-run) -----")
-        print(text)
+        if not users:
+            print("----- 配信内容(dry-run, ユーザー別データなし) -----")
+            print(build_message(status, explanations))
+        for uid, data in users.items():
+            print(f"----- 配信内容(dry-run, user: {uid}) -----")
+            print(build_message(status, explanations, data))
         return
-    _push_line(text)
+
+    user_ids = [u.strip() for u in os.environ.get("ALLOWED_USER_IDS", "").split(",") if u.strip()]
+    # 私的データが無い/古い場合は保有・予算なしの共通本文にフォールバック
+    texts = {uid: build_message(status, explanations, users.get(uid)) for uid in user_ids}
+    _push_texts(texts)
 
 
 def _full_candidates(status: dict) -> list[dict]:
