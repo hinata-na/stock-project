@@ -1,27 +1,17 @@
 {
- "date": "2026-07-03",
- "run_at": "2026-07-05T12:27:37",
+ "date": "2026-07-06",
+ "run_at": "2026-07-06T12:29:48",
  "regime_ok": true,
- "budget": "固定30万円",
- "evaluated": 0,
+ "evaluated": 2,
  "candidates": [
   {
-   "code": "4419",
-   "name": "Ｆｉｎａｔｅｘｔホールディングス",
-   "entry_limit": 1516.0,
-   "take_profit": 1622.1,
-   "stop_loss": 1409.9,
-   "volume_ratio": 2.2
-  },
-  {
-   "code": "7366",
-   "name": "ＬＩＴＡＬＩＣＯ",
-   "entry_limit": 1668.0,
-   "take_profit": 1784.8,
-   "stop_loss": 1551.2,
-   "volume_ratio": 2.2
+   "code": "8613",
+   "name": "丸三証券",
+   "entry_limit": 1106.0,
+   "take_profit": 1183.4,
+   "stop_loss": 1028.6,
+   "volume_ratio": 2.1
   }
  ],
- "holdings": [],
  "notes": []
 }
