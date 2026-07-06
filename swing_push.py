@@ -104,11 +104,13 @@ def _tracking_lines() -> list[str]:
             lines.append(f"・{row['name']}({row['code']}): 約定待ち(指値 {_yen(row['entry_limit'])})")
         else:
             held = row.get("days_held", "")
-            held_txt = f"保有{int(float(held)) + 1}日目" if held and held == held else "保有中"
+            has_held = bool(held) and held == held  # 空文字・NaN(float)を除外
+            held_days = int(float(held)) if has_held else 0
+            held_txt = f"保有{held_days + 1}日目" if has_held else "保有中"
             lines.append(
                 f"・{row['name']}({row['code']}): {held_txt}"
                 f"(利確 {_yen(row['take_profit'])} / 損切り {_yen(row['stop_loss'])}"
-                f" / 残り{max(0, int(row['time_stop_days']) - int(float(held or 0)))}営業日)"
+                f" / 残り{max(0, int(row['time_stop_days']) - held_days)}営業日)"
             )
     return lines
 

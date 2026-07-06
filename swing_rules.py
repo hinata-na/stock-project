@@ -252,4 +252,7 @@ def evaluate_after_signal(hist, signal_date, setup: dict, slippage_pct: float = 
             )
             return result
 
-    return result  # 出口条件にまだ達していない(保有中)
+    # 出口条件にまだ達していない(保有中)。経過営業日を残しておく
+    # (未設定だと candidates.csv の days_held が空になり、配信の日数表示が壊れる)
+    result["days_held"] = min(deadline, len(hist) - 1) - entry_idx
+    return result
