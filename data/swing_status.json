@@ -1,17 +1,9 @@
 {
  "date": "2026-07-06",
- "run_at": "2026-07-06T12:29:48",
+ "run_at": "2026-07-06T15:11:47",
  "regime_ok": true,
  "evaluated": 2,
- "candidates": [
-  {
-   "code": "8613",
-   "name": "丸三証券",
-   "entry_limit": 1106.0,
-   "take_profit": 1183.4,
-   "stop_loss": 1028.6,
-   "volume_ratio": 2.1
-  }
- ],
- "notes": []
+ "candidates": [],
+ "notes": [],
+ "reason": "条件に該当する銘柄なし"
 }
