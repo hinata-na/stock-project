@@ -1,9 +1,9 @@
 {
- "date": "2026-07-07",
- "run_at": "2026-07-07T19:10:44",
- "regime_ok": true,
- "evaluated": 1,
+ "date": "2026-07-08",
+ "run_at": "2026-07-08T17:35:24",
+ "regime_ok": false,
+ "evaluated": 0,
  "candidates": [],
  "notes": [],
- "reason": "条件に該当する銘柄なし"
+ "reason": "地合い悪化(日経平均がMA25未満)のため候補なし"
 }
