@@ -1,16 +1,24 @@
 {
- "date": "2026-08-12",
- "run_at": "2026-08-12T12:04:06",
+ "date": "2026-08-13",
+ "run_at": "2026-08-13T11:55:25",
  "regime_ok": true,
  "evaluated": 1,
  "candidates": [
   {
-   "code": "7593",
-   "name": "ＶＴホールディングス",
-   "entry_limit": 513.0,
-   "take_profit": 548.9,
-   "stop_loss": 477.1,
-   "volume_ratio": 4.3
+   "code": "2124",
+   "name": "ジェイエイシーリクルートメント",
+   "entry_limit": 1017.0,
+   "take_profit": 1088.2,
+   "stop_loss": 945.8,
+   "volume_ratio": 4.8
+  },
+  {
+   "code": "8897",
+   "name": "ＭＩＲＡＲＴＨホールディングス",
+   "entry_limit": 452.0,
+   "take_profit": 483.6,
+   "stop_loss": 420.4,
+   "volume_ratio": 3.5
   }
  ],
  "notes": []
