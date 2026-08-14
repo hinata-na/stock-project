@@ -1,24 +1,32 @@
 {
- "date": "2026-08-13",
- "run_at": "2026-08-13T11:55:25",
+ "date": "2026-08-14",
+ "run_at": "2026-08-14T11:51:25",
  "regime_ok": true,
- "evaluated": 1,
+ "evaluated": 3,
  "candidates": [
   {
-   "code": "2124",
-   "name": "ジェイエイシーリクルートメント",
-   "entry_limit": 1017.0,
-   "take_profit": 1088.2,
-   "stop_loss": 945.8,
-   "volume_ratio": 4.8
+   "code": "5027",
+   "name": "ＡｎｙＭｉｎｄ　Ｇｒｏｕｐ",
+   "entry_limit": 623.0,
+   "take_profit": 666.6,
+   "stop_loss": 579.4,
+   "volume_ratio": 3.7
   },
   {
-   "code": "8897",
-   "name": "ＭＩＲＡＲＴＨホールディングス",
-   "entry_limit": 452.0,
-   "take_profit": 483.6,
-   "stop_loss": 420.4,
-   "volume_ratio": 3.5
+   "code": "3245",
+   "name": "ディア・ライフ",
+   "entry_limit": 1151.0,
+   "take_profit": 1231.6,
+   "stop_loss": 1070.4,
+   "volume_ratio": 2.9
+  },
+  {
+   "code": "8508",
+   "name": "Ｊトラスト",
+   "entry_limit": 895.0,
+   "take_profit": 957.7,
+   "stop_loss": 832.3,
+   "volume_ratio": 2.3
   }
  ],
  "notes": []
