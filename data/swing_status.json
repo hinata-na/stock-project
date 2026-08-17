@@ -1,32 +1,16 @@
 {
- "date": "2026-08-14",
- "run_at": "2026-08-14T11:51:25",
+ "date": "2026-08-17",
+ "run_at": "2026-08-17T11:33:53",
  "regime_ok": true,
- "evaluated": 3,
+ "evaluated": 6,
  "candidates": [
   {
-   "code": "5027",
-   "name": "ＡｎｙＭｉｎｄ　Ｇｒｏｕｐ",
-   "entry_limit": 623.0,
-   "take_profit": 666.6,
-   "stop_loss": 579.4,
-   "volume_ratio": 3.7
-  },
-  {
-   "code": "3245",
-   "name": "ディア・ライフ",
-   "entry_limit": 1151.0,
-   "take_profit": 1231.6,
-   "stop_loss": 1070.4,
-   "volume_ratio": 2.9
-  },
-  {
-   "code": "8508",
-   "name": "Ｊトラスト",
-   "entry_limit": 895.0,
-   "take_profit": 957.7,
-   "stop_loss": 832.3,
-   "volume_ratio": 2.3
+   "code": "3679",
+   "name": "じげん",
+   "entry_limit": 446.0,
+   "take_profit": 477.2,
+   "stop_loss": 414.8,
+   "volume_ratio": 2.2
   }
  ],
  "notes": []
