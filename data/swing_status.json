@@ -1,17 +1,9 @@
 {
- "date": "2026-08-17",
- "run_at": "2026-08-17T11:33:53",
+ "date": "2026-08-18",
+ "run_at": "2026-08-18T11:16:42",
  "regime_ok": true,
- "evaluated": 6,
- "candidates": [
-  {
-   "code": "3679",
-   "name": "じげん",
-   "entry_limit": 446.0,
-   "take_profit": 477.2,
-   "stop_loss": 414.8,
-   "volume_ratio": 2.2
-  }
- ],
- "notes": []
+ "evaluated": 5,
+ "candidates": [],
+ "notes": [],
+ "reason": "条件に該当する銘柄なし"
 }
