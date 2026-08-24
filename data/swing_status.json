@@ -1,17 +1,9 @@
 {
- "date": "2026-08-21",
- "run_at": "2026-08-21T11:35:00",
- "regime_ok": true,
- "evaluated": 6,
- "candidates": [
-  {
-   "code": "3232",
-   "name": "三重交通グループホールディングス",
-   "entry_limit": 572.0,
-   "take_profit": 612.0,
-   "stop_loss": 532.0,
-   "volume_ratio": 3.0
-  }
- ],
- "notes": []
+ "date": "2026-08-24",
+ "run_at": "2026-08-24T11:44:46",
+ "regime_ok": false,
+ "evaluated": 7,
+ "candidates": [],
+ "notes": [],
+ "reason": "地合い悪化(日経平均がMA25未満)のため候補なし"
 }
